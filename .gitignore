@@ -1,27 +1,9 @@
-# Environments
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# SQLite Databases
-*.db
-*.sqlite
-*.sqlite3
-metrics.db
-
-# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
-*$py.class
-
-# IDEs
-.idea/
-.vscode/
-
-# OS generated files
-.DS_Store
-Thumbs.db
+*.pyc
+*.pyo
+venv/
+env/
+.pytest_cache/
+*.db
+*.sqlite3
