@@ -10,11 +10,15 @@ class ProxyRotator:
         self._dead_proxies: set[str] = set()
         self._current_index: int = 0
         self._lock = asyncio.Lock()
+        self._initialized = False
         
     async def initialize(self):
         """Fetch and test free proxies on startup."""
+        if self._initialized:
+            return
         raw_proxies = await self._fetch_free_proxies()
         self._working_proxies = await self._test_proxies(raw_proxies)
+        self._initialized = True
         print(f"[PROXY] {len(self._working_proxies)} working proxies found")
 
     async def _fetch_free_proxies(self) -> List[str]:

@@ -9,10 +9,7 @@ class FetchCommands(commands.Cog):
         self.bot = bot
         self.db = DatabaseManager()
         self.campaign_mgr = CampaignManager(self.db)
-        
-    async def cog_load(self):
-        """Initializes proxies for campaign manager."""
-        await self.campaign_mgr.initialize()
+
     
     @app_commands.command(name="fetch_campaign_data", description="Fetch fresh metrics for all users in a campaign")
     @app_commands.describe(campaign_id="Campaign to fetch fresh data for")
@@ -28,7 +25,7 @@ class FetchCommands(commands.Cog):
         # Progress message
         msg = await interaction.followup.send(embed=discord.Embed(
             title="⏳ Fetching Campaign Data", 
-            description="Initializing scrapers... This may take a while.",
+            description="Initializing proxies and scrapers... This may take up to a minute.",
             color=discord.Color.gold()
         ), wait=True)
         
@@ -38,6 +35,8 @@ class FetchCommands(commands.Cog):
                 description=status_text,
                 color=discord.Color.gold()
             ))
+
+        await self.campaign_mgr.initialize()
 
         result = await self.campaign_mgr.fetch_campaign_data(campaign_id, progress_callback)
         
