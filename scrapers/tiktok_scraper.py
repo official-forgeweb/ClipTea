@@ -144,12 +144,25 @@ class TikTokScraper(BaseScraper):
         return metrics
 
     async def scrape_single_video(self, video_url: str) -> Optional[Dict]:
-        """Scrape a single TikTok video and extract author + metrics."""
+        """Scrape a single TikTok video and extract author + metrics.
+        Tries with proxy first, falls back to direct connection."""
         await self.rate_limiter.wait("tiktok.com")
+
+        for attempt, use_proxy in enumerate([True, False]):
+            result = await self._attempt_scrape_video(video_url, use_proxy=use_proxy)
+            if result is not None:
+                return result
+            if attempt == 0:
+                print(f"[TikTok] Proxy failed for {video_url}, retrying with direct connection...")
+
+        return None
+
+    async def _attempt_scrape_video(self, video_url: str, use_proxy: bool = True) -> Optional[Dict]:
+        """Single attempt to scrape a TikTok video."""
         result = None
 
         try:
-            page = await self._create_optimized_page()
+            page = await self._create_optimized_page(use_proxy=use_proxy)
             await page.goto(video_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
             await self._human_like_delay()
 
@@ -243,8 +256,9 @@ class TikTokScraper(BaseScraper):
 
         except Exception as e:
             await self.rate_limiter.report_error("tiktok.com")
-            print(f"[TikTok Error] Failed scraping video {video_url}: {str(e)}")
+            print(f"[TikTok Error] Failed scraping video {video_url} (proxy={use_proxy}): {str(e)}")
         finally:
             await self._teardown_browser()
 
         return result
+

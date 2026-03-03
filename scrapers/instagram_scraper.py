@@ -130,12 +130,26 @@ class InstagramScraper(BaseScraper):
         return metrics
 
     async def scrape_single_video(self, video_url: str) -> Optional[Dict]:
-        """Scrape a single Instagram reel/post and extract author + metrics."""
+        """Scrape a single Instagram reel/post and extract author + metrics.
+        Tries with proxy first, falls back to direct connection on failure."""
         await self.rate_limiter.wait("instagram.com")
+
+        # Try with proxy first, then without
+        for attempt, use_proxy in enumerate([True, False]):
+            result = await self._attempt_scrape_video(video_url, use_proxy=use_proxy)
+            if result is not None:
+                return result
+            if attempt == 0:
+                print(f"[IG] Proxy failed for {video_url}, retrying with direct connection...")
+
+        return None
+
+    async def _attempt_scrape_video(self, video_url: str, use_proxy: bool = True) -> Optional[Dict]:
+        """Single attempt to scrape a video, with or without proxy."""
         result = None
 
         try:
-            page = await self._create_optimized_page()
+            page = await self._create_optimized_page(use_proxy=use_proxy)
             await page.goto(video_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
             await self._human_like_delay()
 
@@ -153,10 +167,8 @@ class InstagramScraper(BaseScraper):
                 video_id = match.group(1)
 
             # Method 1: Try meta tags for author
-            # og:title often has: "Username on Instagram: caption"
             og_title = await page.get_attribute("meta[property='og:title']", "content")
             if og_title:
-                # Pattern: "Username on Instagram: ..."
                 title_match = re.match(r'^(.+?)\s+on\s+Instagram', og_title)
                 if title_match:
                     author_username = title_match.group(1).strip().lstrip('@')
@@ -164,7 +176,6 @@ class InstagramScraper(BaseScraper):
             # Method 2: Try looking for the username link on the page
             if not author_username:
                 try:
-                    # Header section usually has the author link
                     header_link = await page.locator("header a[href*='/']").first.get_attribute("href")
                     if header_link:
                         parts = [p for p in header_link.strip('/').split('/') if p]
@@ -200,7 +211,6 @@ class InstagramScraper(BaseScraper):
             # Try caption from og:description
             og_desc = await page.get_attribute("meta[property='og:description']", "content")
             if og_desc:
-                # Often format: "N Likes, N Comments - Username (@handle) on Instagram: 'caption'"
                 cap_match = re.search(r'on Instagram:\s*["\']?(.*)', og_desc, re.DOTALL)
                 if cap_match:
                     caption = cap_match.group(1).strip().rstrip("'\"")
@@ -234,7 +244,7 @@ class InstagramScraper(BaseScraper):
 
         except Exception as e:
             await self.rate_limiter.report_error("instagram.com")
-            print(f"[IG Error] Failed scraping video {video_url}: {str(e)}")
+            print(f"[IG Error] Failed scraping video {video_url} (proxy={use_proxy}): {str(e)}")
         finally:
             await self._teardown_browser()
 

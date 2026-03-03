@@ -20,12 +20,20 @@ class BaseScraper(ABC):
         self.browser = None
         self.context = None
 
-    async def _setup_browser(self):
-        """Creates a stealth browser with a proxy."""
+    async def _setup_browser(self, use_proxy: bool = True):
+        """Creates a stealth browser, optionally with a proxy."""
         from playwright.async_api import async_playwright
         self.playwright = await async_playwright().start()
 
-        proxy = await self.proxy_rotator.get_proxy()
+        proxy = None
+        if use_proxy:
+            proxy = await self.proxy_rotator.get_proxy()
+
+        if proxy:
+            print(f"[SCRAPER] Using proxy: {proxy.get('server', 'unknown')}")
+        else:
+            print("[SCRAPER] Using direct connection (no proxy)")
+
         self.browser = await create_stealth_browser(self.playwright, proxy=proxy)
 
         fingerprint = self.fingerprint_gen.get_fingerprint()
@@ -41,10 +49,10 @@ class BaseScraper(ABC):
         await apply_stealth_scripts(self.context)
         return self.context
 
-    async def _create_optimized_page(self) -> Page:
+    async def _create_optimized_page(self, use_proxy: bool = True) -> Page:
         """Creates a page with bandwidth optimization enabled."""
         if not self.context:
-            await self._setup_browser()
+            await self._setup_browser(use_proxy=use_proxy)
 
         page = await self.context.new_page()
         optimizer = BandwidthOptimizer()
@@ -52,13 +60,25 @@ class BaseScraper(ABC):
         return page
 
     async def _teardown_browser(self):
-        """Cleans up browser resources."""
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        if hasattr(self, 'playwright'):
-            await self.playwright.stop()
+        """Cleans up browser resources and resets state for reuse."""
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'playwright') and self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
+        self.context = None
+        self.browser = None
+        self.playwright = None
 
     async def _human_like_delay(self):
         """Random wait between 1.5 to 4 seconds to mimic human behavior."""

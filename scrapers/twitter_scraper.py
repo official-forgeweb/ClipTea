@@ -159,10 +159,10 @@ class TwitterScraper(BaseScraper):
                 except Exception as e:
                     print(f"[Twitter API] Error fetching single tweet: {e}")
 
-            # Method 2: Browser scraping fallback
+            # Method 2: Browser scraping fallback (use direct connection, free proxies unreliable)
             if not caption and not views:
                 try:
-                    page = await self._create_optimized_page()
+                    page = await self._create_optimized_page(use_proxy=False)
                     await page.goto(video_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
                     await self._human_like_delay()
 
