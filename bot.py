@@ -1,59 +1,171 @@
+"""
+Campaign Analytics Discord Bot — Main Entry Point
+
+Complete feature set:
+  • Smart campaign creation with auto-generated IDs
+  • User account linking for Instagram, TikTok, Twitter
+  • Video submission with ownership verification
+  • Automatic periodic scraping of tracked videos
+  • Auto-stop system for budget/duration/views limits
+  • Admin dashboard, leaderboard, detailed stats
+  • Notification system with daily summaries
+
+Setup:
+  1. pip install -r requirements.txt
+  2. playwright install chromium
+  3. Add DISCORD_TOKEN to .env
+  4. python bot.py
+"""
+
+import sys
 import asyncio
+
+# Prevent noisy asyncio pipe connection errors on Windows
+if sys.platform == 'win32':
+    import asyncio.proactor_events
+    def silence_event_loop_closed(func):
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except (ConnectionResetError, OSError, RuntimeError):
+                pass
+        return wrapper
+    asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost = silence_event_loop_closed(
+        asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
+    )
 import discord
 from discord.ext import commands
-from config import DISCORD_TOKEN, DATABASE_PATH
-from database.models import init_database
 
-# 1. Create virtual environment
-# python -m venv venv
-# source venv/bin/activate  (Linux/Mac)
-# venv\Scripts\activate     (Windows)
-# 2. Install dependencies
-# pip install -r requirements.txt
-# 3. Install Playwright browser
-# playwright install chromium
-# 4. Create .env file with:
-# DISCORD_TOKEN=your_bot_token_here
-# TWITTER_BEARER_TOKEN=optional_twitter_token
-# 5. Run the bot
-# python bot.py
-# 6. FIRST TIME: Slash commands take up to 1 hour to appear in Discord
-#    For instant sync during development, sync to a specific guild:
-#    await bot.tree.sync(guild=discord.Object(id=YOUR_SERVER_ID))
+from config import DISCORD_TOKEN
+from database.models import init_database
+from config import DATABASE_PATH
+
 
 class CampaignBot(commands.Bot):
+    """Main bot class with cog and task loading."""
+
     def __init__(self):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
-    
+        # intents.message_content = True
+        # intents.members = True
+
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None  # We use a custom /help command
+        )
+
     async def setup_hook(self):
+        """Load cogs and sync commands on startup."""
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("  Campaign Analytics Bot — Starting up...")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
         # Initialize database
         await init_database(DATABASE_PATH)
-        
-        # Load cog extensions
-        await self.load_extension("cogs.campaign_commands")
-        await self.load_extension("cogs.fetch_commands")
-        await self.load_extension("cogs.metrics_commands")
-        
-        # Sync slash commands with Discord
-        await self.tree.sync()
-        print("[BOT] Slash commands synced!")
-    
+        print("✅ Database initialized")
+
+        # Load command cogs
+        cog_modules = [
+            "cogs.admin_commands",
+            "cogs.settings_commands",
+            "cogs.account_commands",
+            "cogs.campaign_commands",
+            "cogs.submission_commands",
+            "cogs.stats_commands",
+            "cogs.dashboard_commands",
+            "cogs.help_commands",
+        ]
+
+        for cog in cog_modules:
+            try:
+                await self.load_extension(cog)
+                print(f"  ✅ Loaded: {cog}")
+            except Exception as e:
+                print(f"  ❌ Failed: {cog} — {e}")
+
+        # Load background tasks
+        task_modules = [
+            "tasks.periodic_scraper",
+            "tasks.campaign_monitor",
+            "tasks.daily_summary",
+        ]
+
+        for task in task_modules:
+            try:
+                await self.load_extension(task)
+                print(f"  ✅ Loaded: {task}")
+            except Exception as e:
+                print(f"  ❌ Failed: {task} — {e}")
+
+        # Sync slash commands
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ Synced {len(synced)} slash commands")
+        except Exception as e:
+            print(f"❌ Command sync error: {e}")
+
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
     async def on_ready(self):
-        print(f"[BOT] Logged in as {self.user.name}")
-        print(f"[BOT] Bot is ready! Use /help in Discord")
-        # Set bot status
+        """Log bot connection info."""
+        print(f"🟢 Bot online as {self.user} (ID: {self.user.id})")
+        print(f"🌐 Serving {len(self.guilds)} guild(s)")
+
+        # Set presence
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="campaign metrics"
+                name="campaigns | /help"
             )
         )
 
-bot = CampaignBot()
+    async def on_command_error(self, ctx, error):
+        """Global error handler for command prefixes (fallback)."""
+        if isinstance(error, commands.CommandNotFound):
+            return
+        print(f"[ERROR] {type(error).__name__}: {error}")
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error):
+        """Global error handler for slash commands."""
+        if isinstance(error, discord.app_commands.errors.CheckFailure):
+            try:
+                await interaction.response.send_message(
+                    "❌ You do not have permission to use this command.",
+                    ephemeral=True
+                )
+            except Exception:
+                pass
+            return
+
+        error_msg = str(error)[:200]
+        embed = discord.Embed(
+            title="⚠️ Error",
+            description=f"An error occurred:\n```{error_msg}```",
+            color=discord.Color.red()
+        )
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            pass
+
+        print(f"[APP_ERROR] {type(error).__name__}: {error}")
+
+
+def main():
+    """Entry point."""
+    if not DISCORD_TOKEN:
+        print("❌ DISCORD_TOKEN not found in .env file!")
+        print("   Create a .env file with: DISCORD_TOKEN=your_token_here")
+        return
+
+    bot = CampaignBot()
+    bot.run(DISCORD_TOKEN)
+
 
 if __name__ == "__main__":
-    if DISCORD_TOKEN == "your_bot_token_here" or not DISCORD_TOKEN:
-        print("[ERROR] Please set a valid DISCORD_TOKEN in the .env file.")
-    else:
-        bot.run(DISCORD_TOKEN)
+    main()

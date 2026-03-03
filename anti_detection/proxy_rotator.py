@@ -52,15 +52,28 @@ class ProxyRotator:
     async def _test_proxies(self, proxies: List[str], max_concurrent: int = 20, timeout: int = PROXY_TEST_TIMEOUT) -> List[str]:
         """Test proxies concurrently, keep only working ones."""
         working = []
+        
+        # Testing thousands of proxies clogs the asyncio event loop.
+        # Just test a random subset if the list is massive to keep the Discord bot responsive.
+        import random
+        proxies_to_test = random.sample(proxies, min(200, len(proxies)))
+        
         semaphore = asyncio.Semaphore(max_concurrent)
         
         async def test_and_add(proxy):
             async with semaphore:
+                await asyncio.sleep(0.05)  # Yield explicitly to the event loop
                 if await self._test_single_proxy(proxy, timeout):
                     working.append(proxy)
                     
-        tasks = [test_and_add(p) for p in proxies]
-        await asyncio.gather(*tasks)
+        # Group tasks into chunks to prevent overwhelming the event loop
+        chunk_size = 50
+        for i in range(0, len(proxies_to_test), chunk_size):
+            chunk = proxies_to_test[i:i + chunk_size]
+            tasks = [asyncio.create_task(test_and_add(p)) for p in chunk]
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(0.2)  # Give Discord gateway time to respond to pings
+            
         return working
 
     async def _test_single_proxy(self, proxy: str, timeout: int) -> bool:

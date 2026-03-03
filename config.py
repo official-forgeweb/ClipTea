@@ -12,7 +12,7 @@ DATABASE_PATH = "campaign_data.db"
 
 # Proxies
 PROXY_FILE = "proxies.txt"
-ROTATING_PROXY_URL = os.getenv("ROTATING_PROXY_URL", None)  # For future paid proxy usage
+ROTATING_PROXY_URL = os.getenv("ROTATING_PROXY_URL", None)
 
 # Twitter API (Optional)
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", None)
@@ -28,7 +28,13 @@ RATE_LIMIT = {
 MAX_POSTS_PER_USER = 20
 HEADLESS = True
 PAGE_TIMEOUT = 30000
-REQUESTS_PER_PROXY = 5  # Lower number of requests for free proxies before rotation
+REQUESTS_PER_PROXY = 5
+
+# Default scrape interval (can be overridden by bot_settings)
+SCRAPE_INTERVAL_MINUTES = 60
+
+# Instagram session storage directory (for cookie-based login)
+IG_SESSION_DIR = os.path.join(os.path.dirname(__file__), "ig_user_data")
 
 # Free proxy sources
 FREE_PROXY_SOURCES = [
@@ -40,4 +46,4 @@ FREE_PROXY_SOURCES = [
 
 PROXY_TEST_URL = "http://httpbin.org/ip"
 PROXY_TEST_TIMEOUT = 5
-PROXY_REFRESH_INTERVAL = 1800  # Reload proxies every 30 minutes
+PROXY_REFRESH_INTERVAL = 1800

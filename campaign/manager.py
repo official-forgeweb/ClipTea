@@ -1,78 +1,145 @@
 import asyncio
-from typing import Dict, Any, Callable
+from typing import Dict, Any, Callable, Optional
 from database.manager import DatabaseManager
 from anti_detection.proxy_rotator import ProxyRotator
 from anti_detection.rate_limiter import RateLimiter
 from scrapers.instagram_scraper import InstagramScraper
 from scrapers.tiktok_scraper import TikTokScraper
 from scrapers.twitter_scraper import TwitterScraper
-from config import MAX_POSTS_PER_USER
+
 
 class CampaignManager:
-    """Orchestrates the scraping workflow for a campaign."""
-    
+    """Orchestrates scraping workflows for campaigns. 
+    Now focused on video-submission-based scraping rather than profile scraping."""
+
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.proxy_rotator = ProxyRotator()
         self.rate_limiter = RateLimiter()
-        
+
         self.scrapers = {
             "instagram": InstagramScraper(self.proxy_rotator, self.rate_limiter),
             "tiktok": TikTokScraper(self.proxy_rotator, self.rate_limiter),
-            "twitter": TwitterScraper(self.proxy_rotator, self.rate_limiter)
+            "twitter": TwitterScraper(self.proxy_rotator, self.rate_limiter),
         }
-        
+
     async def initialize(self):
-        """Initializes proxies before use."""
+        """Initialize proxies before use."""
         await self.proxy_rotator.initialize()
-        
-    async def fetch_campaign_data(self, campaign_id: str, progress_callback: Callable = None) -> Dict[str, Any]:
-        """Fetches fresh metrics for all users in a campaign."""
-        users = await self.db.get_campaign_users(campaign_id)
-        if not users:
-            return {"success": False, "message": "No users found in campaign."}
-            
+
+    def get_scraper(self, platform: str):
+        """Get the scraper for a given platform."""
+        return self.scrapers.get(platform)
+
+    async def scrape_video(self, video_url: str, platform: str) -> Optional[Dict[str, Any]]:
+        """Scrape a single video URL and return full data including author."""
+        scraper = self.get_scraper(platform)
+        if not scraper:
+            return None
+
+        try:
+            return await scraper.scrape_single_video(video_url)
+        except Exception as e:
+            print(f"[CampaignManager] Error scraping {video_url}: {e}")
+            return None
+
+    async def scrape_video_metrics(self, video_url: str, platform: str) -> Optional[Dict[str, Any]]:
+        """Scrape just the metrics for a video (for periodic re-scraping)."""
+        scraper = self.get_scraper(platform)
+        if not scraper:
+            return None
+
+        try:
+            return await scraper.scrape_post_metrics(video_url)
+        except Exception as e:
+            print(f"[CampaignManager] Error scraping metrics for {video_url}: {e}")
+            return None
+
+    async def scrape_all_tracking_videos(self, progress_callback: Callable = None) -> Dict[str, Any]:
+        """Scrape metrics for all actively tracked videos across all active campaigns."""
+        videos = await self.db.get_all_tracking_videos()
+
         summary = {
-            "total_users": len(users),
-            "successful_users": 0,
-            "failed_users": 0,
-            "total_posts_found": 0,
-            "errors": []
+            "total_videos": len(videos),
+            "successful": 0,
+            "failed": 0,
+            "errors": [],
         }
-        
-        for i, user in enumerate(users):
-            username = user["username"]
-            platform = user["platform"]
-            user_id = user["id"]
-            
+
+        for i, video in enumerate(videos):
+            video_url = video["video_url"]
+            platform = video["platform"]
+            video_id = video["id"]
+
             if progress_callback:
-                await progress_callback(f"Fetching {platform} user @{username} ({i+1}/{len(users)})...")
-                
-            scraper = self.scrapers.get(platform)
-            if not scraper:
-                summary["failed_users"] += 1
-                summary["errors"].append(f"No scraper for {platform}")
-                continue
-                
+                await progress_callback(
+                    f"Scraping {platform} video {i + 1}/{len(videos)}..."
+                )
+
             try:
-                # Scrape recent posts
-                posts = await scraper.scrape_user_posts(username, max_posts=MAX_POSTS_PER_USER)
-                
-                if posts:
-                    summary["total_posts_found"] += len(posts)
-                    # Save post and metrics to DB
-                    for post in posts:
-                        await self.db.save_post_and_metrics(user_id, platform, post)
-                    summary["successful_users"] += 1
+                metrics = await self.scrape_video_metrics(video_url, platform)
+                if metrics:
+                    await self.db.save_metric_snapshot(
+                        video_id=video_id,
+                        views=metrics.get("views", 0),
+                        likes=metrics.get("likes", 0),
+                        comments=metrics.get("comments", 0),
+                        shares=metrics.get("shares", 0),
+                    )
+                    summary["successful"] += 1
                 else:
-                    summary["failed_users"] += 1
-                    summary["errors"].append(f"No posts found for @{username} on {platform}")
-                    
-                # Delay between users
-                await asyncio.sleep(2.0)
-                
+                    summary["failed"] += 1
+                    summary["errors"].append(f"No metrics returned for {video_url}")
             except Exception as e:
-                summary["failed_users"] += 1
-                summary["errors"].append(f"Error for @{username}: {str(e)}")
-                
+                summary["failed"] += 1
+                summary["errors"].append(f"Error for {video_url}: {str(e)}")
+
+            # Small delay between videos
+            await asyncio.sleep(1.5)
+
+        return summary
+
+    async def fetch_campaign_data(self, campaign_id: str, progress_callback: Callable = None) -> Dict[str, Any]:
+        """Fetch fresh metrics for all submitted videos in a campaign."""
+        videos = await self.db.get_campaign_videos(campaign_id)
+        if not videos:
+            return {"success": False, "message": "No submitted videos in this campaign."}
+
+        summary = {
+            "total_videos": len(videos),
+            "successful": 0,
+            "failed": 0,
+            "errors": [],
+        }
+
+        for i, video in enumerate(videos):
+            video_url = video["video_url"]
+            platform = video["platform"]
+            video_id = video["id"]
+
+            if progress_callback:
+                await progress_callback(
+                    f"Scraping {platform} video {i + 1}/{len(videos)}..."
+                )
+
+            try:
+                metrics = await self.scrape_video_metrics(video_url, platform)
+                if metrics:
+                    await self.db.save_metric_snapshot(
+                        video_id=video_id,
+                        views=metrics.get("views", 0),
+                        likes=metrics.get("likes", 0),
+                        comments=metrics.get("comments", 0),
+                        shares=metrics.get("shares", 0),
+                    )
+                    summary["successful"] += 1
+                else:
+                    summary["failed"] += 1
+                    summary["errors"].append(f"No metrics for {video_url}")
+            except Exception as e:
+                summary["failed"] += 1
+                summary["errors"].append(f"Error: {str(e)}")
+
+            await asyncio.sleep(1.5)
+
         return {"success": True, "summary": summary}

@@ -1,9 +1,31 @@
+# Environment
 .env
+venv/
+env/
+.venv/
+Scripts/
+
+# Python caching
 __pycache__/
 *.pyc
 *.pyo
-venv/
-env/
+*.pyd
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Database files
 *.db
 *.sqlite3
+campaign_data.db
+
+# Proxy files
+proxies.txt
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
