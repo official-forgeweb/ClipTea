@@ -18,6 +18,10 @@ class SettingsCommands(commands.Cog):
     @settings_group.command(name="view", description="View current global default settings")
     @admin_only()
     async def settings_view(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+        except:
+            return
         settings = await self.db.get_all_settings()
 
         embed = discord.Embed(
@@ -60,7 +64,10 @@ class SettingsCommands(commands.Cog):
         daily_time = settings.get('daily_summary_time', '09:00')
         embed.add_field(name="📅 Daily Summary", value=f"{'✅ Enabled' if daily == 'true' else '❌ Disabled'} at {daily_time}", inline=True)
 
-        await interaction.response.send_message(embed=embed)
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            pass
 
     @settings_group.command(name="update", description="Update global default settings")
     @app_commands.describe(
@@ -84,6 +91,10 @@ class SettingsCommands(commands.Cog):
         scrape_interval_minutes: int = None,
         admin_role: discord.Role = None,
     ):
+        try:
+            await interaction.response.defer()
+        except:
+            return
         updated = []
 
         if default_rate_per_10k is not None:
@@ -118,7 +129,10 @@ class SettingsCommands(commands.Cog):
             updated.append(f"🛡️ Admin Role: {admin_role.mention}")
 
         if not updated:
-            await interaction.response.send_message("⚠️ No settings were changed.", ephemeral=True)
+            try:
+                await interaction.followup.send("⚠️ No settings were changed.", ephemeral=True)
+            except Exception:
+                pass
             return
 
         embed = discord.Embed(
@@ -126,7 +140,10 @@ class SettingsCommands(commands.Cog):
             description="\n".join(updated),
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            pass
 
     # ── NOTIFICATION CHANNEL ───────────────────────────
     @app_commands.command(name="set_notification_channel", description="Set the channel for bot notifications")
@@ -147,6 +164,10 @@ class SettingsCommands(commands.Cog):
         channel: discord.TextChannel,
         notification_type: app_commands.Choice[str] = None,
     ):
+        try:
+            await interaction.response.defer()
+        except:
+            return
         await self.db.set_setting("notification_channel_id", str(channel.id))
 
         notif_type_value = notification_type.value if notification_type else "all"
@@ -157,7 +178,10 @@ class SettingsCommands(commands.Cog):
             description=f"Notifications will be sent to {channel.mention}\nType: **{notif_type_value.title()}**",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            pass
 
     # ── DAILY SUMMARY ──────────────────────────────────
     @app_commands.command(name="set_daily_summary", description="Configure daily summary reports")
@@ -174,6 +198,10 @@ class SettingsCommands(commands.Cog):
         time: str = "09:00",
         channel: discord.TextChannel = None,
     ):
+        try:
+            await interaction.response.defer()
+        except:
+            return
         await self.db.set_setting("daily_summary_enabled", "true" if enabled else "false")
         await self.db.set_setting("daily_summary_time", time)
 
@@ -188,7 +216,10 @@ class SettingsCommands(commands.Cog):
         )
         if channel:
             embed.add_field(name="Channel", value=channel.mention)
-        await interaction.response.send_message(embed=embed)
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            pass
 
 
 async def setup(bot: commands.Bot):

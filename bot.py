@@ -153,39 +153,27 @@ class CampaignBot(commands.Bot):
         # 2. Permission denied — tell the user nicely
         if isinstance(error, discord.app_commands.errors.CheckFailure):
             try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "❌ You do not have permission to use this command.",
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ You don't have permission for this command.",
                         ephemeral=True
                     )
                 else:
-                    await interaction.response.send_message(
-                        "❌ You do not have permission to use this command.",
+                    await interaction.followup.send(
+                        "❌ You don't have permission for this command.",
                         ephemeral=True
                     )
-            except discord.errors.NotFound:
+            except:
                 pass
-            except Exception:
+        else:
+            try:
+                msg = f"❌ Error: {str(error)[:200]}"
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(msg, ephemeral=True)
+            except:
                 pass
-            return
-
-        # 3. Everything else — show generic error to user
-        error_msg = str(error)[:200]
-        embed = discord.Embed(
-            title="⚠️ Error",
-            description=f"An error occurred:\n```{error_msg}```",
-            color=discord.Color.red()
-        )
-
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        except discord.errors.NotFound:
-            pass
-        except Exception:
-            pass
 
         print(f"[APP_ERROR] {type(error).__name__}: {error}")
 

@@ -21,6 +21,8 @@ class SubmissionCommands(commands.Cog):
     async def _ensure_initialized(self):
         if not self._initialized:
             await self.campaign_mgr.initialize()
+            from services.apify_instagram import ApifyInstagramService
+            self.apify_service = ApifyInstagramService(self.db)
             self._initialized = True
 
     # ── SUBMIT VIDEO ───────────────────────────────────
@@ -36,8 +38,8 @@ class SubmissionCommands(commands.Cog):
         video_url: str
     ):
         try:
-            await interaction.response.defer()
-        except (discord.errors.NotFound, Exception):
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
             return
 
         # STEP 1: Validate URL
@@ -56,7 +58,10 @@ class SubmissionCommands(commands.Cog):
                 ),
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            try:
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except:
+                pass
             return
 
         # STEP 2: Check campaign exists and is active
@@ -132,26 +137,38 @@ class SubmissionCommands(commands.Cog):
             return
 
         # STEP 7: Scrape the video
-        progress_msg = await interaction.followup.send(
-            embed=discord.Embed(
-                title="⏳ Scraping Video...",
-                description=f"Fetching data from {platform.title()}...\nThis may take a moment.",
-                color=discord.Color.gold()
-            ),
-            wait=True
-        )
-
+        try:
+            progress_msg = await interaction.followup.send(
+                embed=discord.Embed(
+                    title="⏳ Scraping Video...",
+                    description=f"Fetching data from {platform.title()}...\nThis may take up to 60 seconds (Apify).",
+                    color=discord.Color.gold()
+                ),
+                wait=True,
+                ephemeral=True
+            )
+        except:
+            return
+            
         await self._ensure_initialized()
-        video_data = await self.campaign_mgr.scrape_video(video_url, platform)
+        
+        # Determine whether to use Apify or normal campaign_mgr scrapper
+        if platform == "instagram":
+            video_data = await self.apify_service.get_video_metrics(video_url)
+        else:
+            video_data = await self.campaign_mgr.scrape_video(video_url, platform)
 
         if not video_data:
-            await progress_msg.edit(
-                embed=discord.Embed(
-                    title="❌ Scrape Failed",
-                    description="Could not fetch video data. The URL may be invalid or the post may be private.",
-                    color=discord.Color.red()
+            try:
+                await progress_msg.edit(
+                    embed=discord.Embed(
+                        title="❌ Scrape Failed",
+                        description="Could not fetch video data. The URL may be invalid or the post may be private.",
+                        color=discord.Color.red()
+                    )
                 )
-            )
+            except:
+                pass
             return
 
         # STEP 8: Verify ownership
@@ -159,17 +176,20 @@ class SubmissionCommands(commands.Cog):
         linked_username = account['platform_username'].lower().strip()
 
         if author and author != linked_username:
-            await progress_msg.edit(
-                embed=discord.Embed(
-                    title="❌ Ownership Verification Failed",
-                    description=(
-                        f"This video was posted by **@{video_data.get('author_username', 'unknown')}**, "
-                        f"but your linked {platform.title()} account is **@{account['platform_username']}**.\n\n"
-                        f"You can only submit your own videos."
-                    ),
-                    color=discord.Color.red()
+            try:
+                await progress_msg.edit(
+                    embed=discord.Embed(
+                        title="❌ Ownership Verification Failed",
+                        description=(
+                            f"This video was posted by **@{video_data.get('author_username', 'unknown')}**, "
+                            f"but your linked {platform.title()} account is **@{account['platform_username']}**.\n\n"
+                            f"You can only submit your own videos."
+                        ),
+                        color=discord.Color.red()
+                    )
                 )
-            )
+            except:
+                pass
             return
 
         # STEP 9: Save to database
@@ -186,13 +206,16 @@ class SubmissionCommands(commands.Cog):
         )
 
         if not record_id:
-            await progress_msg.edit(
-                embed=discord.Embed(
-                    title="⚠️ Already Submitted",
-                    description="This video was already submitted to this campaign.",
-                    color=discord.Color.orange()
+            try:
+                await progress_msg.edit(
+                    embed=discord.Embed(
+                        title="⚠️ Already Submitted",
+                        description="This video was already submitted to this campaign.",
+                        color=discord.Color.orange()
+                    )
                 )
-            )
+            except:
+                pass
             return
 
         # Save initial metrics
@@ -233,8 +256,18 @@ class SubmissionCommands(commands.Cog):
             value="Metrics will be tracked automatically.\nUse `/stats` to check progress.",
             inline=False
         )
+        
+        if platform == "instagram" and video_data.get("estimated", False):
+            embed.set_footer(text="⚠️ Apify extraction failed; metrics are estimated.")
+        elif platform == "instagram" and video_data.get("cached", False):
+            embed.set_footer(text="🔄 Fetched from Apify Cache")
+        elif platform == "instagram" and video_data.get("method") == "apify":
+            embed.set_footer(text="✅ Apify Live Fetch")
 
-        await progress_msg.edit(embed=embed)
+        try:
+            await progress_msg.edit(embed=embed)
+        except:
+            pass
 
         # Send notification
         channel_id = await self.db.get_setting("notification_channel_id")
@@ -281,15 +314,23 @@ class SubmissionCommands(commands.Cog):
         interaction: discord.Interaction,
         campaign_id: str = None
     ):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         videos = await self.db.get_user_videos(str(interaction.user.id), campaign_id)
-
+    
         if not videos:
             embed = discord.Embed(
                 title="📹 My Videos",
                 description="You haven't submitted any videos yet.\nUse `/submit` to submit a video!",
                 color=discord.Color.blue()
             )
-            await interaction.response.send_message(embed=embed)
+            try:
+                await interaction.followup.send(embed=embed)
+            except:
+                pass
             return
 
         embed = discord.Embed(
@@ -320,8 +361,11 @@ class SubmissionCommands(commands.Cog):
 
         if len(videos) > 10:
             embed.set_footer(text=f"Showing 10 of {len(videos)} videos")
-
-        await interaction.response.send_message(embed=embed)
+    
+        try:
+            await interaction.followup.send(embed=embed)
+        except:
+            pass
 
     @my_videos.autocomplete("campaign_id")
     async def my_videos_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -339,14 +383,22 @@ class SubmissionCommands(commands.Cog):
     @app_commands.command(name="video_details", description="View detailed metrics for a specific video")
     @app_commands.describe(video_url="URL of the submitted video")
     async def video_details(self, interaction: discord.Interaction, video_url: str):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         video_url = normalize_url(video_url)
         video = await self.db.get_video_by_url(video_url)
-
+    
         if not video:
-            await interaction.response.send_message(
-                "❌ Video not found. Make sure the URL was submitted to a campaign.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Video not found. Make sure the URL was submitted to a campaign.",
+                    ephemeral=True
+                )
+            except:
+                pass
             return
 
         history = await self.db.get_metric_history(video['id'])
@@ -398,8 +450,11 @@ class SubmissionCommands(commands.Cog):
                     value=f"+{format_number(int(daily_avg))} views/day",
                     inline=True
                 )
-
-        await interaction.response.send_message(embed=embed)
+    
+        try:
+            await interaction.followup.send(embed=embed)
+        except:
+            pass
 
     # ── DELETE VIDEO ───────────────────────────────────
     @app_commands.command(name="delete_video", description="Delete a submitted video from tracking")
@@ -413,13 +468,21 @@ class SubmissionCommands(commands.Cog):
         video_url: str,
         reason: str = "Deleted by user"
     ):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         video_url = normalize_url(video_url)
         video = await self.db.get_video_by_url(video_url)
-
+    
         if not video:
-            await interaction.response.send_message(
-                "❌ Video not found.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Video not found.", ephemeral=True
+                )
+            except:
+                pass
             return
 
         # Check permission: must be video owner or admin
@@ -440,11 +503,17 @@ class SubmissionCommands(commands.Cog):
                 description=f"Video has been removed from tracking.\n**Reason:** {reason}",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed)
+            try:
+                await interaction.followup.send(embed=embed)
+            except:
+                pass
         else:
-            await interaction.response.send_message(
-                "❌ Failed to delete video.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Failed to delete video.", ephemeral=True
+                )
+            except:
+                pass
 
 
 async def setup(bot: commands.Bot):

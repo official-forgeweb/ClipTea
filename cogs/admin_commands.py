@@ -143,11 +143,19 @@ class AdminCommands(commands.Cog):
         rate_per_10k_views: float = None,
         status: app_commands.Choice[str] = None,
     ):
+        try:
+            await interaction.response.defer()
+        except discord.errors.NotFound:
+            return
+            
         campaign = await self.db.get_campaign(campaign_id)
         if not campaign:
-            await interaction.response.send_message(
-                f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
+                )
+            except:
+                pass
             return
 
         kwargs = {}
@@ -167,9 +175,12 @@ class AdminCommands(commands.Cog):
             kwargs['status'] = status.value
 
         if not kwargs:
-            await interaction.response.send_message(
-                "⚠️ No changes specified.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "⚠️ No changes specified.", ephemeral=True
+                )
+            except:
+                pass
             return
 
         success = await self.db.update_campaign(campaign_id, **kwargs)
@@ -179,11 +190,14 @@ class AdminCommands(commands.Cog):
             embed.title = "✅ Campaign Updated"
             changes = ", ".join(f"**{k}**" for k in kwargs.keys())
             embed.description = f"Updated: {changes}"
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
-            await interaction.response.send_message(
-                "❌ Failed to update campaign.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Failed to update campaign.", ephemeral=True
+                )
+            except:
+                pass
 
     @update_campaign.autocomplete("campaign_id")
     async def campaign_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -210,22 +224,28 @@ class AdminCommands(commands.Cog):
         campaign_id: str,
         reason: str = "Manually ended by admin"
     ):
-        campaign = await self.db.get_campaign(campaign_id)
-        if not campaign:
-            await interaction.response.send_message(
-                f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
-            )
-            return
-
-        if campaign['status'] == 'completed':
-            await interaction.response.send_message(
-                f"⚠️ Campaign `{campaign_id}` is already completed.", ephemeral=True
-            )
-            return
-
         try:
             await interaction.response.defer()
-        except (discord.errors.NotFound, Exception):
+        except discord.errors.NotFound:
+            return
+            
+        campaign = await self.db.get_campaign(campaign_id)
+        if not campaign:
+            try:
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
+                )
+            except:
+                pass
+            return
+            
+        if campaign['status'] == 'completed':
+            try:
+                await interaction.followup.send(
+                    f"⚠️ Campaign `{campaign_id}` is already completed.", ephemeral=True
+                )
+            except:
+                pass
             return
         await self.db.update_campaign_status(campaign_id, 'completed', reason)
 
@@ -306,13 +326,21 @@ class AdminCommands(commands.Cog):
     @app_commands.describe(campaign_id="Campaign to delete")
     @admin_only()
     async def delete_campaign(self, interaction: discord.Interaction, campaign_id: str):
+        try:
+            await interaction.response.defer()
+        except discord.errors.NotFound:
+            return
+            
         campaign = await self.db.get_campaign(campaign_id)
         if not campaign:
-            await interaction.response.send_message(
-                f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
+                )
+            except:
+                pass
             return
-
+    
         success = await self.db.delete_campaign(campaign_id)
         if success:
             embed = discord.Embed(
@@ -320,11 +348,17 @@ class AdminCommands(commands.Cog):
                 description=f"Campaign **{campaign['name']}** (`{campaign_id}`) has been permanently deleted.",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed)
+            try:
+                await interaction.followup.send(embed=embed)
+            except:
+                pass
         else:
-            await interaction.response.send_message(
-                "❌ Failed to delete campaign.", ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Failed to delete campaign.", ephemeral=True
+                )
+            except:
+                pass
 
     @delete_campaign.autocomplete("campaign_id")
     async def delete_campaign_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -338,6 +372,59 @@ class AdminCommands(commands.Cog):
         except Exception:
             return []
 
+    # ── API USAGE ──────────────────────────────────────
+    @app_commands.command(name="api_usage", description="View Apify API usage statistics")
+    @app_commands.describe(days="Number of days to look back (default: 7)")
+    @admin_only()
+    async def api_usage(self, interaction: discord.Interaction, days: int = 7):
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.NotFound:
+            return
+
+        from services.apify_instagram import ApifyInstagramService
+        apify_service = ApifyInstagramService(self.db)
+        stats = await apify_service.get_usage_stats(days=days)
+
+        embed = discord.Embed(
+            title="📊 Apify API Usage",
+            description=f"Statistics for the past **{days} days**",
+            color=discord.Color.blue()
+        )
+
+        embed.add_field(
+            name="ApiCalls Made", 
+            value=f"**{stats['total_calls']}** calls", 
+            inline=True
+        )
+        
+        # Calculate cost
+        # Pricing is $2.50 per 1000 requests, so $0.0025 per request
+        cost = stats['total_calls'] * 0.0025
+        embed.add_field(
+            name="Estimated Cost", 
+            value=f"**${cost:.4f}** (at $2.50/1k)", 
+            inline=True
+        )
+
+        embed.add_field(
+            name="Success Rate", 
+            value=f"**{stats['success_rate']:.1f}%**", 
+            inline=True
+        )
+
+        embed.add_field(
+            name="Cache Hits", 
+            value=f"**{stats['cache_hits']}** (saved ${stats['cache_hits'] * 0.0025:.4f})", 
+            inline=False
+        )
+
+        embed.set_footer(text="Data depends on local sqlite logs.")
+
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception:
+            pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))

@@ -138,6 +138,30 @@ INDEXES = [
 ]
 
 
+APIFY_CACHE_TABLE = """
+CREATE TABLE IF NOT EXISTS apify_cache (
+    shortcode TEXT PRIMARY KEY,
+    views INTEGER DEFAULT 0,
+    likes INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    author_username TEXT DEFAULT '',
+    raw_response TEXT DEFAULT '',
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+API_USAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS api_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service TEXT DEFAULT 'apify',
+    endpoint TEXT DEFAULT '',
+    shortcode TEXT DEFAULT '',
+    credits_used REAL DEFAULT 0,
+    success INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 async def init_database(db_path: str):
     """Initialize the database with all tables and default settings."""
     import aiosqlite
@@ -154,6 +178,8 @@ async def init_database(db_path: str):
         await db.execute(METRIC_SNAPSHOTS_TABLE)
         await db.execute(NOTIFICATIONS_TABLE)
         await db.execute(IG_VERIFICATION_CODES_TABLE)
+        await db.execute(APIFY_CACHE_TABLE)
+        await db.execute(API_USAGE_TABLE)
         for index_query in INDEXES:
             await db.execute(index_query)
         await db.commit()

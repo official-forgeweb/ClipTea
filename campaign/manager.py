@@ -17,8 +17,10 @@ class CampaignManager:
         self.proxy_rotator = ProxyRotator()
         self.rate_limiter = RateLimiter()
 
+        from services.apify_instagram import ApifyInstagramService
+        self.apify_service = ApifyInstagramService(self.db)
+
         self.scrapers = {
-            "instagram": InstagramScraper(self.proxy_rotator, self.rate_limiter),
             "tiktok": TikTokScraper(self.proxy_rotator, self.rate_limiter),
             "twitter": TwitterScraper(self.proxy_rotator, self.rate_limiter),
         }
@@ -33,6 +35,9 @@ class CampaignManager:
 
     async def scrape_video(self, video_url: str, platform: str) -> Optional[Dict[str, Any]]:
         """Scrape a single video URL and return full data including author."""
+        if platform == "instagram":
+            return await self.apify_service.get_video_metrics(video_url)
+            
         scraper = self.get_scraper(platform)
         if not scraper:
             return None
@@ -45,6 +50,9 @@ class CampaignManager:
 
     async def scrape_video_metrics(self, video_url: str, platform: str) -> Optional[Dict[str, Any]]:
         """Scrape just the metrics for a video (for periodic re-scraping)."""
+        if platform == "instagram":
+            return await self.apify_service.get_video_metrics(video_url)
+            
         scraper = self.get_scraper(platform)
         if not scraper:
             return None

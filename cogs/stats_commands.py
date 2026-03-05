@@ -20,21 +20,25 @@ class StatsCommands(commands.Cog):
     @app_commands.command(name="stats", description="View your clipping statistics")
     @app_commands.describe(user="View another user's stats (admin only)")
     async def stats(self, interaction: discord.Interaction, user: discord.Member = None):
+        try:
+            await interaction.response.defer()
+        except discord.errors.NotFound:
+            return
+            
         # Admin check if viewing someone else
         if user and user.id != interaction.user.id:
             if not await is_admin(interaction):
-                await interaction.response.send_message(
-                    "❌ Only admins can view other users' stats.", ephemeral=True
-                )
+                try:
+                    await interaction.followup.send(
+                        "❌ Only admins can view other users' stats.", ephemeral=True
+                    )
+                except:
+                    pass
                 return
             target_user = user
         else:
             target_user = interaction.user
-
-        try:
-            await interaction.response.defer()
-        except (discord.errors.NotFound, Exception):
-            return
+    
         target_id = str(target_user.id)
 
         # Get accounts
@@ -157,8 +161,11 @@ class StatsCommands(commands.Cog):
                 value="\n".join(achievements),
                 inline=False
             )
-
-        await interaction.followup.send(embed=embed)
+    
+        try:
+            await interaction.followup.send(embed=embed)
+        except:
+            pass
 
     # ── LEADERBOARD ────────────────────────────────────
     @app_commands.command(name="leaderboard", description="View the campaign leaderboard")
@@ -181,8 +188,6 @@ class StatsCommands(commands.Cog):
             await interaction.response.defer()
         except discord.errors.NotFound:
             return  # Interaction expired before we could respond
-        except Exception:
-            return
 
         metric_value = metric.value if metric else "views"
         entries = await self.db.get_leaderboard(campaign_id, metric=metric_value, limit=10)
@@ -244,8 +249,11 @@ class StatsCommands(commands.Cog):
 
         if user_pos:
             embed.set_footer(text=f"Your Position: #{user_pos}")
-
-        await interaction.followup.send(embed=embed)
+    
+        try:
+            await interaction.followup.send(embed=embed)
+        except:
+            pass
 
     @leaderboard.autocomplete("campaign_id")
     async def leaderboard_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -267,16 +275,19 @@ class StatsCommands(commands.Cog):
     @app_commands.command(name="campaign_statistics", description="View detailed statistics for a campaign")
     @app_commands.describe(campaign_id="Campaign to view stats for")
     async def campaign_statistics(self, interaction: discord.Interaction, campaign_id: str):
-        campaign = await self.db.get_campaign(campaign_id)
-        if not campaign:
-            await interaction.response.send_message(
-                f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
-            )
-            return
-
         try:
             await interaction.response.defer()
-        except (discord.errors.NotFound, Exception):
+        except discord.errors.NotFound:
+            return
+            
+        campaign = await self.db.get_campaign(campaign_id)
+        if not campaign:
+            try:
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
+                )
+            except:
+                pass
             return
 
         stats = await self.db.get_campaign_statistics(campaign_id)
@@ -311,8 +322,11 @@ class StatsCommands(commands.Cog):
                 pct = (plat['total_views'] / total_views * 100) if total_views > 0 else 0
                 plat_text += f"{emoji} {plat['platform'].title()}: {format_number(plat['total_views'])} views ({pct:.1f}%)\n"
             embed.add_field(name="📱 Platform Breakdown", value=plat_text, inline=False)
-
-        await interaction.followup.send(embed=embed)
+    
+        try:
+            await interaction.followup.send(embed=embed)
+        except:
+            pass
 
     @campaign_statistics.autocomplete("campaign_id")
     async def stats_autocomplete(self, interaction: discord.Interaction, current: str):

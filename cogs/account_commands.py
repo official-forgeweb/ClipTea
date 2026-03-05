@@ -186,17 +186,24 @@ class AccountCommands(commands.Cog):
         platform: app_commands.Choice[str],
         username: str
     ):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         clean_username = validate_username(username)
         if not clean_username:
-            await interaction.response.send_message(
-                "❌ Invalid username. Please provide your username without @.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ Invalid username. Please provide your username without @.",
+                    ephemeral=True
+                )
+            except Exception:
+                pass
             return
 
         # ── Instagram: bio-verification flow ───────
         if platform.value == "instagram":
-            await interaction.response.defer(ephemeral=True)
 
             code = _generate_code()
             await self.db.save_verification_code(
@@ -249,7 +256,6 @@ class AccountCommands(commands.Cog):
             return
 
         # ── TikTok / Twitter: instant link ─────────
-        await interaction.response.defer(ephemeral=False)
 
         await self.db.link_account(
             discord_user_id=str(interaction.user.id),
@@ -291,12 +297,20 @@ class AccountCommands(commands.Cog):
         platform: app_commands.Choice[str],
         username: str = None,
     ):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         if platform.value == "instagram" and username:
             clean = validate_username(username)
             if not clean:
-                await interaction.response.send_message(
-                    "❌ Invalid username.", ephemeral=True
-                )
+                try:
+                    await interaction.followup.send(
+                        "❌ Invalid username.", ephemeral=True
+                    )
+                except Exception:
+                    pass
                 return
             success = await self.db.unlink_instagram_account(
                 str(interaction.user.id), clean
@@ -320,13 +334,18 @@ class AccountCommands(commands.Cog):
                 color=discord.Color.orange()
             )
         try:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except discord.errors.NotFound:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception:
             pass
 
     # ── /my_accounts ──────────────────────────────
     @app_commands.command(name="my_accounts", description="View your linked social media accounts")
     async def my_accounts(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
         accounts = await self.db.get_user_accounts(str(interaction.user.id))
 
         embed = discord.Embed(
@@ -379,8 +398,8 @@ class AccountCommands(commands.Cog):
 
         embed.set_footer(text=f"User: {interaction.user}")
         try:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except discord.errors.NotFound:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception:
             pass
 
 
