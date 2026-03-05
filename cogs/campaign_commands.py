@@ -121,12 +121,15 @@ class CampaignCommands(commands.Cog):
 
     @join_campaign.autocomplete("campaign_id")
     async def join_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_active_campaigns()
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            campaigns = await self.db.get_active_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
     @app_commands.command(name="leave", description="Leave a campaign")
     @app_commands.describe(campaign_id="Campaign to leave")
@@ -153,13 +156,16 @@ class CampaignCommands(commands.Cog):
 
     @leave_campaign.autocomplete("campaign_id")
     async def leave_autocomplete(self, interaction: discord.Interaction, current: str):
-        user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in user_campaigns
-            if c.get('member_status') == 'active'
-            and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
-        ][:25]
+        try:
+            user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in user_campaigns
+                if c.get('member_status') == 'active'
+                and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
+            ][:25]
+        except Exception:
+            return []
 
     @app_commands.command(name="my_campaigns", description="View campaigns you are part of")
     async def my_campaigns(self, interaction: discord.Interaction):

@@ -19,6 +19,10 @@ Setup:
 
 import sys
 import asyncio
+import logging
+
+# Suppress discord.py's noisy internal error logs — we handle everything ourselves
+logging.getLogger('discord.app_commands.tree').setLevel(logging.CRITICAL)
 
 # Prevent noisy asyncio pipe connection errors on Windows
 if sys.platform == 'win32':
@@ -46,8 +50,7 @@ class CampaignBot(commands.Bot):
 
     def __init__(self):
         intents = discord.Intents.default()
-        # intents.message_content = True
-        # intents.members = True
+        # intents.members = True  # Commented out to prevent PrivilegedIntentsRequired error
 
         super().__init__(
             command_prefix="!",
@@ -64,6 +67,9 @@ class CampaignBot(commands.Bot):
         # Initialize database
         await init_database(DATABASE_PATH)
         print("✅ Database initialized")
+
+        # Override tree error handler to suppress noisy "Ignoring exception" logs
+        self.tree.on_error = self._tree_error_handler
 
         # Load command cogs
         cog_modules = [
@@ -126,18 +132,44 @@ class CampaignBot(commands.Bot):
             return
         print(f"[ERROR] {type(error).__name__}: {error}")
 
-    async def on_app_command_error(self, interaction: discord.Interaction, error):
-        """Global error handler for slash commands."""
+    async def _tree_error_handler(self, interaction: discord.Interaction, error):
+        """
+        Custom tree-level error handler.
+        This REPLACES discord.py's default tree.on_error which logs every error
+        as 'Ignoring exception in command ...' at ERROR level. We handle
+        everything silently and respond to the user instead.
+        """
+        # 1. Expired interactions (10062) — nothing to do
+        if isinstance(error, discord.app_commands.errors.CommandInvokeError):
+            if isinstance(error.original, discord.errors.NotFound) and error.original.code == 10062:
+                return
+            # Transient network errors
+            err_name = type(error.original).__name__
+            if err_name in ('ClientConnectorDNSError', 'ClientConnectorError',
+                            'ClientOSError', 'ConnectionResetError', 'OSError'):
+                print(f"[NETWORK] Transient error in {getattr(interaction.command, 'name', '?')}: {err_name}")
+                return
+
+        # 2. Permission denied — tell the user nicely
         if isinstance(error, discord.app_commands.errors.CheckFailure):
             try:
-                await interaction.response.send_message(
-                    "❌ You do not have permission to use this command.",
-                    ephemeral=True
-                )
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ You do not have permission to use this command.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ You do not have permission to use this command.",
+                        ephemeral=True
+                    )
+            except discord.errors.NotFound:
+                pass
             except Exception:
                 pass
             return
 
+        # 3. Everything else — show generic error to user
         error_msg = str(error)[:200]
         embed = discord.Embed(
             title="⚠️ Error",
@@ -150,6 +182,8 @@ class CampaignBot(commands.Bot):
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.errors.NotFound:
+            pass
         except Exception:
             pass
 

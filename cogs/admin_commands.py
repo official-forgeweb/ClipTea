@@ -47,7 +47,10 @@ class AdminCommands(commands.Cog):
         platforms: app_commands.Choice[str] = None,
         auto_stop: bool = True
     ):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return  # Interaction expired or network error — can't respond
 
         # Get default rate from settings if not specified
         if rate_per_10k_views is None:
@@ -184,12 +187,15 @@ class AdminCommands(commands.Cog):
 
     @update_campaign.autocomplete("campaign_id")
     async def campaign_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_all_campaigns()
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
     # ── END CAMPAIGN ───────────────────────────────────
     @app_commands.command(name="end_campaign", description="Manually end a campaign")
@@ -217,7 +223,10 @@ class AdminCommands(commands.Cog):
             )
             return
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return
         await self.db.update_campaign_status(campaign_id, 'completed', reason)
 
         # Get final stats
@@ -282,12 +291,15 @@ class AdminCommands(commands.Cog):
 
     @end_campaign.autocomplete("campaign_id")
     async def end_campaign_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_active_campaigns()
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            campaigns = await self.db.get_active_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
     # ── DELETE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="delete_campaign", description="Permanently delete a campaign")
@@ -316,12 +328,15 @@ class AdminCommands(commands.Cog):
 
     @delete_campaign.autocomplete("campaign_id")
     async def delete_campaign_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_all_campaigns()
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
 
 async def setup(bot: commands.Bot):

@@ -31,7 +31,10 @@ class StatsCommands(commands.Cog):
         else:
             target_user = interaction.user
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return
         target_id = str(target_user.id)
 
         # Get accounts
@@ -174,7 +177,12 @@ class StatsCommands(commands.Cog):
         campaign_id: str = None,
         metric: app_commands.Choice[str] = None,
     ):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.errors.NotFound:
+            return  # Interaction expired before we could respond
+        except Exception:
+            return
 
         metric_value = metric.value if metric else "views"
         entries = await self.db.get_leaderboard(campaign_id, metric=metric_value, limit=10)
@@ -241,14 +249,19 @@ class StatsCommands(commands.Cog):
 
     @leaderboard.autocomplete("campaign_id")
     async def leaderboard_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_all_campaigns()
-        choices = [app_commands.Choice(name="Global (All Campaigns)", value="")]
-        choices += [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ]
-        return choices[:25]
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            choices = [app_commands.Choice(name="Global (All Campaigns)", value="")]
+            choices += [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ]
+            return choices[:25]
+        except discord.errors.NotFound:
+            return []  # Interaction expired — autocomplete timeout
+        except Exception:
+            return []
 
     # ── CAMPAIGN STATISTICS ────────────────────────────
     @app_commands.command(name="campaign_statistics", description="View detailed statistics for a campaign")
@@ -261,7 +274,10 @@ class StatsCommands(commands.Cog):
             )
             return
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return
 
         stats = await self.db.get_campaign_statistics(campaign_id)
         member_count = await self.db.get_campaign_member_count(campaign_id)
@@ -300,12 +316,15 @@ class StatsCommands(commands.Cog):
 
     @campaign_statistics.autocomplete("campaign_id")
     async def stats_autocomplete(self, interaction: discord.Interaction, current: str):
-        campaigns = await self.db.get_all_campaigns()
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
 
 async def setup(bot: commands.Bot):

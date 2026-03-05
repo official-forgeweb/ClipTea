@@ -1,2 +1,3 @@
-2026/03/01-08:46:11.949 34a8 Creating DB C:\Users\lenovo\OneDrive\Desktop\Projects\ClipTea\ig_user_data\Default\Sync Data\LevelDB since it was missing.
-2026/03/01-08:46:12.028 34a8 Reusing MANIFEST C:\Users\lenovo\OneDrive\Desktop\Projects\ClipTea\ig_user_data\Default\Sync Data\LevelDB/MANIFEST-000001
+2026/03/05-13:27:50.033 8b64 Reusing MANIFEST C:\Users\lenovo\OneDrive\Desktop\Projects\ClipTea\ig_user_data\Default\Sync Data\LevelDB/MANIFEST-000001
+2026/03/05-13:27:50.037 8b64 Recovering log #3
+2026/03/05-13:27:50.037 8b64 Reusing old log C:\Users\lenovo\OneDrive\Desktop\Projects\ClipTea\ig_user_data\Default\Sync Data\LevelDB/000003.log 

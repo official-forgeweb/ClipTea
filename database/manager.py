@@ -145,16 +145,30 @@ class DatabaseManager:
 
     async def link_account(self, discord_user_id: str, discord_username: str,
                            platform: str, platform_username: str) -> bool:
-        """Link or update a social media account for a Discord user."""
+        """Link or update a social media account for a Discord user.
+        Multiple Instagram accounts per user are supported.
+        For TikTok/Twitter the latest username replaces the previous (one per platform)."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """INSERT INTO user_accounts (discord_user_id, discord_username, platform, platform_username, verified)
-                   VALUES (?, ?, ?, ?, 0)
-                   ON CONFLICT(discord_user_id, platform) 
-                   DO UPDATE SET platform_username = ?, discord_username = ?, verified = 0, linked_at = CURRENT_TIMESTAMP""",
-                (discord_user_id, discord_username, platform, platform_username,
-                 platform_username, discord_username)
-            )
+            if platform == 'instagram':
+                # Insert new row; if (user, platform, username) already exists just update meta
+                await db.execute(
+                    """INSERT INTO user_accounts (discord_user_id, discord_username, platform, platform_username, verified)
+                       VALUES (?, ?, ?, ?, 0)
+                       ON CONFLICT(discord_user_id, platform, platform_username)
+                       DO UPDATE SET discord_username = ?, linked_at = CURRENT_TIMESTAMP""",
+                    (discord_user_id, discord_username, platform, platform_username, discord_username)
+                )
+            else:
+                # For TikTok / Twitter: one account per platform — replace by deleting old first
+                await db.execute(
+                    "DELETE FROM user_accounts WHERE discord_user_id = ? AND platform = ?",
+                    (discord_user_id, platform)
+                )
+                await db.execute(
+                    """INSERT INTO user_accounts (discord_user_id, discord_username, platform, platform_username, verified)
+                       VALUES (?, ?, ?, ?, 0)""",
+                    (discord_user_id, discord_username, platform, platform_username)
+                )
             await db.commit()
             return True
 
@@ -176,6 +190,17 @@ class DatabaseManager:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def unlink_instagram_account(self, discord_user_id: str, platform_username: str) -> bool:
+        """Unlink a specific Instagram account by username."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM user_accounts WHERE discord_user_id = ? "
+                "AND platform = 'instagram' AND platform_username = ?",
+                (discord_user_id, platform_username)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def get_user_accounts(self, discord_user_id: str) -> List[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -185,14 +210,77 @@ class DatabaseManager:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def get_user_account(self, discord_user_id: str, platform: str) -> Optional[Dict[str, Any]]:
+        """Get the first linked account for a platform (for TikTok/Twitter single-account use)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM user_accounts WHERE discord_user_id = ? AND platform = ?",
+                "SELECT * FROM user_accounts WHERE discord_user_id = ? AND platform = ? ORDER BY linked_at DESC LIMIT 1",
                 (discord_user_id, platform)
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
+
+    async def get_user_instagram_accounts(self, discord_user_id: str) -> List[Dict[str, Any]]:
+        """Get all linked Instagram accounts for a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM user_accounts WHERE discord_user_id = ? AND platform = 'instagram' ORDER BY linked_at DESC",
+                (discord_user_id,)
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    # ═══════════════════════════════════════════════
+    # INSTAGRAM VERIFICATION CODES
+    # ═══════════════════════════════════════════════
+
+    async def save_verification_code(self, discord_user_id: str, platform_username: str,
+                                     code: str, ttl_minutes: int = 10) -> bool:
+        """Save a pending verification code for an Instagram account (10-minute TTL)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT INTO ig_verification_codes
+                       (discord_user_id, platform, platform_username, code, expires_at, verified)
+                   VALUES (?, 'instagram', ?, ?, datetime('now', '+' || ? || ' minutes'), 0)
+                   ON CONFLICT(discord_user_id, platform_username)
+                   DO UPDATE SET code = ?, expires_at = datetime('now', '+' || ? || ' minutes'),
+                                 verified = 0, created_at = CURRENT_TIMESTAMP""",
+                (discord_user_id, platform_username, code, ttl_minutes,
+                 code, ttl_minutes)
+            )
+            await db.commit()
+            return True
+
+    async def get_pending_verification(self, discord_user_id: str,
+                                       platform_username: str) -> Optional[Dict[str, Any]]:
+        """Return the active (non-expired, unverified) code for a user+username pair."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT * FROM ig_verification_codes
+                   WHERE discord_user_id = ? AND platform_username = ?
+                         AND verified = 0 AND expires_at > CURRENT_TIMESTAMP""",
+                (discord_user_id, platform_username)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def mark_verified_by_code(self, discord_user_id: str,
+                                    platform_username: str) -> bool:
+        """Mark a verification code as used and verify the linked account."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """UPDATE ig_verification_codes SET verified = 1
+                   WHERE discord_user_id = ? AND platform_username = ?""",
+                (discord_user_id, platform_username)
+            )
+            await db.execute(
+                """UPDATE user_accounts SET verified = 1
+                   WHERE discord_user_id = ? AND platform = 'instagram' AND platform_username = ?""",
+                (discord_user_id, platform_username)
+            )
+            await db.commit()
+            return True
 
     # ═══════════════════════════════════════════════
     # CAMPAIGN MEMBERS

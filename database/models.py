@@ -55,7 +55,21 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     platform_username TEXT NOT NULL,
     verified BOOLEAN DEFAULT 0,
     linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(discord_user_id, platform)
+    UNIQUE(discord_user_id, platform, platform_username)
+);
+"""
+
+IG_VERIFICATION_CODES_TABLE = """
+CREATE TABLE IF NOT EXISTS ig_verification_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_user_id TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'instagram',
+    platform_username TEXT NOT NULL,
+    code TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    verified BOOLEAN DEFAULT 0,
+    UNIQUE(discord_user_id, platform_username)
 );
 """
 
@@ -132,11 +146,51 @@ async def init_database(db_path: str):
         await db.execute(BOT_SETTINGS_TABLE)
         await db.executescript(BOT_SETTINGS_DEFAULTS)
         await db.execute(CAMPAIGNS_TABLE)
+        # Run migration for multi-account support before creating the table
+        await _migrate_user_accounts(db)
         await db.execute(USER_ACCOUNTS_TABLE)
         await db.execute(CAMPAIGN_MEMBERS_TABLE)
         await db.execute(SUBMITTED_VIDEOS_TABLE)
         await db.execute(METRIC_SNAPSHOTS_TABLE)
         await db.execute(NOTIFICATIONS_TABLE)
+        await db.execute(IG_VERIFICATION_CODES_TABLE)
         for index_query in INDEXES:
             await db.execute(index_query)
         await db.commit()
+
+
+async def _migrate_user_accounts(db):
+    """Migrate user_accounts UNIQUE constraint from (user, platform) to (user, platform, username).
+    This allows multiple Instagram accounts per user. Runs safely on both fresh and existing DBs."""
+    # Check if old table exists with old constraint by inspecting sqlite_master
+    async with db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_accounts'"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return  # Fresh DB, no migration needed — CREATE IF NOT EXISTS will handle it
+    existing_sql = row[0] or ""
+    # If the existing table already has the new 3-column unique key, skip
+    if "platform_username" in existing_sql and "UNIQUE(discord_user_id, platform, platform_username)" in existing_sql:
+        return
+    # Perform migration: rename old table, create new one, copy data, drop old
+    await db.executescript("""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE user_accounts RENAME TO user_accounts_old;
+        CREATE TABLE IF NOT EXISTS user_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_user_id TEXT NOT NULL,
+            discord_username TEXT DEFAULT '',
+            platform TEXT NOT NULL CHECK(platform IN ('instagram','tiktok','twitter')),
+            platform_username TEXT NOT NULL,
+            verified BOOLEAN DEFAULT 0,
+            linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(discord_user_id, platform, platform_username)
+        );
+        INSERT OR IGNORE INTO user_accounts
+            (id, discord_user_id, discord_username, platform, platform_username, verified, linked_at)
+        SELECT id, discord_user_id, discord_username, platform, platform_username, verified, linked_at
+        FROM user_accounts_old;
+        DROP TABLE user_accounts_old;
+        PRAGMA foreign_keys = ON;
+    """)

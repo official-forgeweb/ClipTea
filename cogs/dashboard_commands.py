@@ -19,7 +19,10 @@ class DashboardCommands(commands.Cog):
     @app_commands.command(name="dashboard", description="Admin overview of all campaigns")
     @admin_only()
     async def dashboard(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return
 
         active = await self.db.get_campaigns_by_status("active")
         paused = await self.db.get_campaigns_by_status("paused")

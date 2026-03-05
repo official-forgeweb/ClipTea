@@ -93,7 +93,13 @@ class ProxyRotator:
     async def get_proxy(self) -> Optional[dict]:
         """Get next working proxy in Playwright format."""
         if ROTATING_PROXY_URL:
-            return {"server": ROTATING_PROXY_URL}
+            from urllib.parse import urlparse
+            p = urlparse(ROTATING_PROXY_URL if ROTATING_PROXY_URL.startswith('http') else f"http://{ROTATING_PROXY_URL}")
+            d = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+            if p.username and p.password:
+                d["username"] = p.username
+                d["password"] = p.password
+            return d
             
         async with self._lock:
             if not self._working_proxies:
@@ -105,8 +111,17 @@ class ProxyRotator:
             
             if not proxy.startswith("http://") and not proxy.startswith("https://"):
                 proxy = f"http://{proxy}"
+            
+            # Parse credentials if present (e.g., http://user:pass@ip:port)
+            from urllib.parse import urlparse
+            parsed = urlparse(proxy)
+            
+            proxy_dict = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+            if parsed.username and parsed.password:
+                proxy_dict["username"] = parsed.username
+                proxy_dict["password"] = parsed.password
                 
-            return {"server": proxy}
+            return proxy_dict
 
     async def mark_failed(self, proxy_server: str):
         """Mark proxy as dead, remove from working pool."""

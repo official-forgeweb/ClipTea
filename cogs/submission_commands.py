@@ -35,7 +35,10 @@ class SubmissionCommands(commands.Cog):
         campaign_id: str,
         video_url: str
     ):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.NotFound, Exception):
+            return
 
         # STEP 1: Validate URL
         video_url = normalize_url(video_url)
@@ -259,13 +262,16 @@ class SubmissionCommands(commands.Cog):
 
     @submit.autocomplete("campaign_id")
     async def submit_autocomplete(self, interaction: discord.Interaction, current: str):
-        user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in user_campaigns
-            if c.get('member_status') == 'active' and c.get('status') == 'active'
-            and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
-        ][:25]
+        try:
+            user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in user_campaigns
+                if c.get('member_status') == 'active' and c.get('status') == 'active'
+                and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
+            ][:25]
+        except Exception:
+            return []
 
     # ── MY VIDEOS ──────────────────────────────────────
     @app_commands.command(name="my_videos", description="View your submitted videos")
@@ -319,12 +325,15 @@ class SubmissionCommands(commands.Cog):
 
     @my_videos.autocomplete("campaign_id")
     async def my_videos_autocomplete(self, interaction: discord.Interaction, current: str):
-        user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
-        return [
-            app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
-            for c in user_campaigns
-            if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-        ][:25]
+        try:
+            user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in user_campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
     # ── VIDEO DETAILS ──────────────────────────────────
     @app_commands.command(name="video_details", description="View detailed metrics for a specific video")

@@ -1,0 +1,97 @@
+{
+  "test_1": {
+    "test": "Direct Connection",
+    "status": "FAIL",
+    "error": "Timeout after 30 seconds"
+  },
+  "test_2": {
+    "test": "Public Post Access",
+    "status": "PASS",
+    "https://www.instagram.com/instagram/": {
+      "status_code": 200,
+      "login_wall": false,
+      "has_post_data": false,
+      "has_og_tags": true,
+      "rate_limited": false,
+      "response_size": 885232
+    },
+    "working_url": "https://www.instagram.com/instagram/"
+  },
+  "test_3": {
+    "test": "Basic Playwright Browser",
+    "status": "FAIL",
+    "error": "Page.goto: Timeout 30000ms exceeded.\nCall log:\n  - navigating to \"https://www.instagram.com/p/DVZEsAjEnw9\", waiting until \"domcontentloaded\"\n"
+  },
+  "test_4": {
+    "test": "Stealth Playwright Browser",
+    "status": "FAIL",
+    "stealth_applied": true,
+    "error": "Page.goto: Timeout 30000ms exceeded.\nCall log:\n  - navigating to \"https://www.instagram.com/p/DVZEsAjEnw9\", waiting until \"domcontentloaded\"\n"
+  },
+  "test_5": {
+    "test": "Free Proxy Quality",
+    "status": "FAIL",
+    "working_proxies": [],
+    "total_fetched": 2868,
+    "httpbin_working": 8,
+    "ig_working": 0,
+    "ig_blocked": 0,
+    "ig_error": 8
+  },
+  "test_6": {
+    "test": "Full Scrape Attempt",
+    "status": "FAIL",
+    "page_loaded": true,
+    "login_wall": true,
+    "meta_tags": true,
+    "shared_data": false,
+    "additional_data": false,
+    "intercepted_xhr": false,
+    "intercepted_count": 0,
+    "html_parsing": true,
+    "extracted_data": {
+      "likes": "37",
+      "comments": "9",
+      "author": "Forgeweb ✨️"
+    },
+    "screenshot": "test6_scrape_attempt.png"
+  },
+  "test_7": {
+    "test": "Alternative Endpoints",
+    "status": "PASS",
+    "endpoints": {
+      "json_api": {
+        "status": 404,
+        "has_data": false,
+        "size": 20916,
+        "works": false
+      },
+      "graphql": {
+        "status": 401,
+        "has_data": false,
+        "works": false
+      },
+      "embed": {
+        "status": 200,
+        "login_wall": false,
+        "has_likes": true,
+        "has_comments": false,
+        "has_views": false,
+        "has_embed_data": true,
+        "author": null,
+        "size": 140908,
+        "works": true
+      },
+      "embed_captioned": {
+        "status": 200,
+        "login_wall": false,
+        "has_data": true,
+        "size": 142234,
+        "likes": null,
+        "comments": null,
+        "views": null,
+        "works": true
+      }
+    }
+  }
+}
