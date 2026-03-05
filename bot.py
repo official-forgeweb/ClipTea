@@ -68,6 +68,12 @@ class CampaignBot(commands.Bot):
         await init_database(DATABASE_PATH)
         print("✅ Database initialized")
 
+        # Initialize Apify tables (fixes missing columns)
+        from services.apify_instagram import ApifyInstagramService
+        apify_service = ApifyInstagramService()
+        await apify_service.init_tables()
+        print("[BOT] Apify database tables initialized")
+
         # Override tree error handler to suppress noisy "Ignoring exception" logs
         self.tree.on_error = self._tree_error_handler
 
