@@ -13,7 +13,11 @@ class SettingsCommands(commands.Cog):
         self.db = DatabaseManager()
 
     # ── SETTINGS GROUP ─────────────────────────────────
-    settings_group = app_commands.Group(name="settings", description="View or update global bot settings")
+    settings_group = app_commands.Group(
+        name="settings", 
+        description="View or update global bot settings",
+        default_permissions=discord.Permissions(administrator=True)
+    )
 
     @settings_group.command(name="view", description="View current global default settings")
     @admin_only()
@@ -147,6 +151,7 @@ class SettingsCommands(commands.Cog):
 
     # ── NOTIFICATION CHANNEL ───────────────────────────
     @app_commands.command(name="set_notification_channel", description="Set the channel for bot notifications")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         channel="Channel for bot notifications",
         notification_type="Type of notifications to send"
@@ -185,6 +190,7 @@ class SettingsCommands(commands.Cog):
 
     # ── DAILY SUMMARY ──────────────────────────────────
     @app_commands.command(name="set_daily_summary", description="Configure daily summary reports")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         enabled="Enable or disable daily summaries",
         time="Time to send (HH:MM format, e.g. 09:00)",

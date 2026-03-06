@@ -18,6 +18,7 @@ class AdminCommands(commands.Cog):
 
     # ── CREATE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="create_campaign", description="Create a new tracking campaign")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         name="Campaign display name",
         duration_days="Campaign duration in days (default: unlimited)",
@@ -115,6 +116,7 @@ class AdminCommands(commands.Cog):
 
     # ── UPDATE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="update_campaign", description="Update an existing campaign's settings")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         campaign_id="Campaign to update",
         name="New campaign name",
@@ -213,6 +215,7 @@ class AdminCommands(commands.Cog):
 
     # ── END CAMPAIGN ───────────────────────────────────
     @app_commands.command(name="end_campaign", description="Manually end a campaign")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         campaign_id="Campaign to end",
         reason="Reason for ending the campaign"
@@ -323,6 +326,7 @@ class AdminCommands(commands.Cog):
 
     # ── DELETE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="delete_campaign", description="Permanently delete a campaign")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(campaign_id="Campaign to delete")
     @admin_only()
     async def delete_campaign(self, interaction: discord.Interaction, campaign_id: str):
@@ -374,6 +378,7 @@ class AdminCommands(commands.Cog):
 
     # ── API USAGE ──────────────────────────────────────
     @app_commands.command(name="api_usage", description="View API usage statistics")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(days="Number of days to look back (default: 7)")
     @admin_only()
     async def api_usage(self, interaction: discord.Interaction, days: int = 7):
@@ -426,18 +431,13 @@ class AdminCommands(commands.Cog):
         except Exception:
             pass
 
-    # ── EXPORT DATA ────────────────────────────────────
-    @app_commands.command(name="export", description="Export campaign submission data")
+    @app_commands.command(name="export", description="Export campaign submission data with clipper breakdown")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        campaign_id="Export data for a specific campaign",
-        format="File format (CSV or JSON)"
+        campaign_id="Campaign ID to export"
     )
-    @app_commands.choices(format=[
-        app_commands.Choice(name="CSV", value="csv"),
-        app_commands.Choice(name="JSON", value="json")
-    ])
     @admin_only()
-    async def export(self, interaction: discord.Interaction, campaign_id: str = None, format: str = "csv"):
+    async def export(self, interaction: discord.Interaction, campaign_id: str):
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
@@ -445,56 +445,168 @@ class AdminCommands(commands.Cog):
 
         import io
         import csv
-        import json
         import aiosqlite
+        from campaign.payment_calculator import calculate_earnings
 
+        campaign = await self.db.get_campaign(campaign_id)
+        if not campaign:
+            await interaction.followup.send(f"❌ Campaign `{campaign_id}` not found.", ephemeral=True)
+            return
+
+        rate = campaign.get('rate_per_10k_views', 10.0)
+
+        # Query to get grouped data: User -> Platform/Account -> Sum of Views
         async with aiosqlite.connect(self.db.db_path) as db:
             db.row_factory = aiosqlite.Row
+            
+            # 1. Get detailed records for CSV
             query = """
                 SELECT 
-                    sv.*, 
-                    c.name as campaign_name,
+                    sv.discord_user_id,
+                    sv.platform,
+                    sv.author_username,
+                    SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE IFNULL(latest.views, 0) END) as account_views,
                     up.crypto_type,
-                    up.crypto_address,
-                    latest.views, latest.likes, latest.comments, latest.shares
+                    up.crypto_address
                 FROM submitted_videos sv
-                LEFT JOIN campaigns c ON sv.campaign_id = c.id
-                LEFT JOIN user_payments up ON sv.discord_user_id = up.discord_user_id
                 LEFT JOIN (
-                    SELECT video_id, views, likes, comments, shares, MAX(id)
+                    SELECT video_id, views, MAX(id)
                     FROM metric_snapshots
                     GROUP BY video_id
                 ) latest ON sv.id = latest.video_id
+                LEFT JOIN user_payments up ON sv.discord_user_id = up.discord_user_id
+                WHERE sv.campaign_id = ? AND sv.status != 'deleted'
+                GROUP BY sv.discord_user_id, sv.platform, sv.author_username
+                ORDER BY sv.discord_user_id, account_views DESC
             """
-            params = []
-            if campaign_id:
-                query += " WHERE sv.campaign_id = ?"
-                params.append(campaign_id)
-            
-            async with db.execute(query, params) as cursor:
+            async with db.execute(query, (campaign_id,)) as cursor:
                 rows = [dict(row) for row in await cursor.fetchall()]
 
         if not rows:
-            await interaction.followup.send("❌ No data found to export.", ephemeral=True)
+            await interaction.followup.send("❌ No data found for this campaign.", ephemeral=True)
             return
 
-        if format == "json":
-            file_data = json.dumps(rows, indent=2, default=str)
-            file_obj = io.BytesIO(file_data.encode('utf-8'))
-            filename = "cliptea_export.json"
-        else:
-            output = io.StringIO()
-            if rows:
-                keys = rows[0].keys()
-                writer = csv.DictWriter(output, fieldnames=keys)
-                writer.writeheader()
-                writer.writerows(rows)
-            file_data = output.getvalue()
-            file_obj = io.BytesIO(file_data.encode('utf-8'))
-            filename = "cliptea_export.csv"
+        # 2. Process data for summary and CSV
+        user_data = {}
+        total_campaign_views = 0
+        
+        for row in rows:
+            uid = row['discord_user_id']
+            views = row['account_views']
+            total_campaign_views += views
+            
+            if uid not in user_data:
+                user_data[uid] = {
+                    'accounts': [],
+                    'total_views': 0,
+                    'crypto_type': row['crypto_type'] or "Not Set",
+                    'crypto_address': row['crypto_address'] or "N/A"
+                }
+            
+            user_data[uid]['accounts'].append({
+                'platform': row['platform'],
+                'username': row['author_username'],
+                'views': views
+            })
+            user_data[uid]['total_views'] += views
 
-        file = discord.File(file_obj, filename=filename)
-        await interaction.followup.send(f"✅ Exported **{len(rows)}** records.", file=file, ephemeral=True)
+        # 3. Create Summary Embed
+        embed = discord.Embed(
+            title=f"📋 Export Summary: {campaign['name']}",
+            description=f"**ID:** `{campaign_id}`\n**Rate:** ${rate}/10k views",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(name="👥 Total Clippers", value=str(len(user_data)), inline=True)
+        embed.add_field(name="👁️ Total Views", value=format_number(total_campaign_views), inline=True)
+        embed.add_field(name="💰 Total Payout", value=format_currency(calculate_earnings(total_campaign_views, rate)), inline=True)
+
+        # Show top users or first few if many
+        summary_text = ""
+        # Sort users by total views
+        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['total_views'], reverse=True)
+        
+        for uid, data in sorted_users[:15]: # Show top 15 in embed
+            earned = calculate_earnings(data['total_views'], rate)
+            acc_list = ", ".join([f"@{a['username']} ({format_number(a['views'])})" for a in data['accounts']])
+            
+            summary_text += f"👤 <@{uid}>\n"
+            summary_text += f"└ 🔗 {acc_list}\n"
+            summary_text += f"└ 💵 Earned: **{format_currency(earned)}** ({format_number(data['total_views'])} views)\n\n"
+
+        if not summary_text:
+            summary_text = "No submission data available."
+            
+        if len(user_data) > 15:
+            summary_text += f"*...and {len(user_data) - 15} more clippers in the CSV file.*"
+
+        # Discord embed limits
+        if len(summary_text) > 4000:
+            summary_text = summary_text[:3900] + "\n\n*(Summary truncated, see CSV for full details)*"
+            
+        embed.add_field(name="📊 Clipper Breakdown", value=summary_text, inline=False)
+
+        # 4. Define Download Button View
+        class ExportView(discord.ui.View):
+            def __init__(self, bot_instance, grouped_data, c_name, c_rate):
+                super().__init__(timeout=600)
+                self.bot = bot_instance
+                self.data = grouped_data
+                self.campaign_name = c_name
+                self.rate = c_rate
+
+            @discord.ui.button(label="📥 Download CSV Report", style=discord.ButtonStyle.success)
+            async def download_csv(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                await btn_interaction.response.defer(ephemeral=True)
+                
+                output = io.StringIO()
+                headers = [
+                    'Discord ID', 'Total Views', 'Earnings ($)', 
+                    'Crypto Type', 'Address', 'Account Breakdown'
+                ]
+                writer = csv.DictWriter(output, fieldnames=headers)
+                writer.writeheader()
+                
+                for uid_str, d in sorted(self.data.items(), key=lambda x: x[1]['total_views'], reverse=True):
+                    # Format accounts for CSV: "IG: @user (50k), TT: @user2 (20k)"
+                    breakdown = ", ".join([
+                        f"{a['platform'].upper()}: @{a['username']} ({a['views']})" 
+                        for a in d['accounts']
+                    ])
+                    
+                    writer.writerow({
+                        'Discord ID': uid_str,
+                        'Total Views': d['total_views'],
+                        'Earnings ($)': f"{calculate_earnings(d['total_views'], self.rate):.2f}",
+                        'Crypto Type': d['crypto_type'],
+                        'Address': d['crypto_address'],
+                        'Account Breakdown': breakdown
+                    })
+                
+                file_data = output.getvalue()
+                file_obj = io.BytesIO(file_data.encode('utf-8'))
+                filename = f"export_{self.campaign_name.lower().replace(' ', '_')}.csv"
+                
+                file = discord.File(file_obj, filename=filename)
+                await btn_interaction.followup.send(
+                    f"✅ Here is the detailed report for **{self.campaign_name}**:", 
+                    file=file, ephemeral=True
+                )
+
+        view = ExportView(self.bot, user_data, campaign['name'], rate)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    @export.autocomplete("campaign_id")
+    async def export_autocomplete(self, interaction: discord.Interaction, current: str):
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
+                for c in campaigns
+                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))

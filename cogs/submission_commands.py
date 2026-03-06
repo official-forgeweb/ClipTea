@@ -421,6 +421,11 @@ class SubmissionCommands(commands.Cog):
             await interaction.followup.send("❌ Video not found.", ephemeral=True)
             return
 
+        # Ownership check
+        if video['discord_user_id'] != str(interaction.user.id) and not await is_admin(interaction):
+            await interaction.followup.send("❌ You can only view details for your own videos.", ephemeral=True)
+            return
+
         history = await self.db.get_metric_history(video['id'])
         campaign = await self.db.get_campaign(video['campaign_id'])
         rate = campaign.get('rate_per_10k_views', 10.0) if campaign else 10.0

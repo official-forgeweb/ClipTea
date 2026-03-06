@@ -17,6 +17,7 @@ class DashboardCommands(commands.Cog):
         self.db = DatabaseManager()
 
     @app_commands.command(name="dashboard", description="Admin overview of all campaigns")
+    @app_commands.default_permissions(administrator=True)
     @admin_only()
     async def dashboard(self, interaction: discord.Interaction):
         try:
