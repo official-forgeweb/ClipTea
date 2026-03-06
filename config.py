@@ -43,7 +43,10 @@ SCRAPE_INTERVAL_MINUTES = 60
 IG_SESSION_DIR = os.path.join(os.path.dirname(__file__), "ig_user_data")
 
 FREE_PROXY_SOURCES = [
-    # Disabled free proxies to let Webshare proxies work exclusively without getting mixed with banned ones
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
 ]
 
 PROXY_TEST_URL = "http://httpbin.org/ip"

@@ -77,6 +77,10 @@ class IGBioVerifier:
                 else:
                     proxy_config = server
                 log.info("[IGBioVerifier] Using proxy: %s", server)
+            else:
+                log.info("[IGBioVerifier] No working proxies available, using direct connection.")
+        else:
+            log.info("[IGBioVerifier] Proxy rotation not enabled, using direct connection.")
 
         async with httpx.AsyncClient(
             headers=_HEADERS,

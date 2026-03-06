@@ -14,10 +14,18 @@ class ProxyRotator:
         
     async def initialize(self):
         """Fetch and test free proxies on startup."""
-        if self._initialized:
+        if self._initialized and self._working_proxies:
             return
+            
+        print("[PROXY] Fetching fresh proxies from internet sources...")
         raw_proxies = await self._fetch_free_proxies()
         self._working_proxies = await self._test_proxies(raw_proxies)
+        
+        if not self._working_proxies:
+            print("[PROXY] Critical: No working proxies found. Retrying with a larger sample...")
+            # Try a larger sample if first one failed
+            self._working_proxies = await self._test_proxies(raw_proxies, max_concurrent=30)
+            
         self._initialized = True
         print(f"[PROXY] {len(self._working_proxies)} working proxies found")
 
@@ -54,9 +62,9 @@ class ProxyRotator:
         working = []
         
         # Testing thousands of proxies clogs the asyncio event loop.
-        # Just test a random subset if the list is massive to keep the Discord bot responsive.
+        # We've increased the sample size to 500 to ensure a healthier pool of working proxies.
         import random
-        proxies_to_test = random.sample(proxies, min(200, len(proxies)))
+        proxies_to_test = random.sample(proxies, min(500, len(proxies)))
         
         semaphore = asyncio.Semaphore(max_concurrent)
         
