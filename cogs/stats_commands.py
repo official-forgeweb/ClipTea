@@ -271,17 +271,6 @@ class StatsCommands(commands.Cog):
         except Exception:
             return []
 
-    @campaign_statistics.autocomplete("campaign_id")
-    async def stats_autocomplete(self, interaction: discord.Interaction, current: str):
-        try:
-            campaigns = await self.db.get_all_campaigns()
-            return [
-                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
-                for c in campaigns
-                if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
-            ][:25]
-        except Exception:
-            return []
 
     @app_commands.command(name="campaign_statistics", description="View detailed statistics for a campaign")
     @app_commands.describe(campaign_id="Campaign to view stats for")
