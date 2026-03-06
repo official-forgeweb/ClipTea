@@ -21,6 +21,8 @@ from database.manager import DatabaseManager
 from utils.formatters import platform_emoji
 from utils.validators import validate_username
 from utils.ig_bio_verifier import IGBioVerifier
+from campaign.manager import CampaignManager
+from anti_detection.proxy_rotator import ProxyRotator
 
 log = logging.getLogger(__name__)
 
@@ -43,13 +45,14 @@ class VerifyView(discord.ui.View):
     """Interactive view with Verify Now and Cancel buttons."""
 
     def __init__(self, discord_user_id: str, username: str, code: str,
-                 db: DatabaseManager, *, timeout: float = 600):
+                 db: DatabaseManager, proxy_rotator: ProxyRotator, *, timeout: float = 600):
         super().__init__(timeout=timeout)
         self.discord_user_id = discord_user_id
         self.username = username
         self.code = code
         self.db = db
-        self.verifier = IGBioVerifier(timeout=20.0)
+        self.proxy_rotator = proxy_rotator
+        self.verifier = IGBioVerifier(proxy_rotator=self.proxy_rotator, timeout=20.0)
 
     # ── Verify Now ─────────────────────────────────
     @discord.ui.button(
@@ -68,6 +71,10 @@ class VerifyView(discord.ui.View):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Ensure proxies are ready
+        if self.proxy_rotator and not self.proxy_rotator._initialized:
+            await self.proxy_rotator.initialize()
 
         # Check the code is still valid in DB
         pending = await self.db.get_pending_verification(
@@ -168,6 +175,7 @@ class AccountCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = DatabaseManager()
+        self.proxy_rotator = ProxyRotator()
 
     # ── /link_account ──────────────────────────────
     @app_commands.command(name="link_account", description="Link your social media account")
@@ -213,6 +221,10 @@ class AccountCommands(commands.Cog):
                 ttl_minutes=10,
             )
 
+            # Ensure proxies are ready
+            if not self.proxy_rotator._initialized:
+                await self.proxy_rotator.initialize()
+
             # Pre-link the account as unverified so it shows up in my_accounts
             await self.db.link_account(
                 discord_user_id=str(interaction.user.id),
@@ -251,6 +263,7 @@ class AccountCommands(commands.Cog):
                 username=clean_username,
                 code=code,
                 db=self.db,
+                proxy_rotator=self.proxy_rotator,
             )
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             return
