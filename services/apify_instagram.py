@@ -86,6 +86,7 @@ class ApifyInstagramService:
                         shares INTEGER DEFAULT 0,
                         author_username TEXT DEFAULT '',
                         caption TEXT DEFAULT '',
+                        posted_at TIMESTAMP DEFAULT NULL,
                         raw_response TEXT DEFAULT '',
                         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -311,6 +312,9 @@ class ApifyInstagramService:
             0
         )
         
+        # Posted at timestamp
+        posted_at = item.get("timestamp") or item.get("created_at") or None
+        
         # Ensure all values are integers
         try:
             views = int(views) if views else 0
@@ -338,6 +342,7 @@ class ApifyInstagramService:
             "shares": shares,
             "author_username": author,
             "caption": str(caption)[:200],
+            "posted_at": posted_at,
             "method": "live",
             "estimated": False,
             "cached": False,
@@ -372,6 +377,7 @@ class ApifyInstagramService:
                     "comments": row["comments"],
                     "shares": row["shares"] if "shares" in row.keys() else 0,
                     "author_username": row["author_username"],
+                    "posted_at": row.get("posted_at") if "posted_at" in row.keys() else None,
                     "method": "cache",
                     "estimated": False,
                     "cached": True,
@@ -387,14 +393,15 @@ class ApifyInstagramService:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
                     INSERT INTO apify_cache 
-                    (shortcode, views, likes, comments, shares, author_username, fetched_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (shortcode, views, likes, comments, shares, author_username, posted_at, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(shortcode) DO UPDATE SET
                         views = excluded.views,
                         likes = excluded.likes,
                         comments = excluded.comments,
                         shares = excluded.shares,
                         author_username = excluded.author_username,
+                        posted_at = COALESCE(excluded.posted_at, apify_cache.posted_at),
                         fetched_at = excluded.fetched_at
                 """, (
                     shortcode,
@@ -403,6 +410,7 @@ class ApifyInstagramService:
                     data.get("comments", 0),
                     data.get("shares", 0),
                     data.get("author_username", ""),
+                    data.get("posted_at"),
                     datetime.now().isoformat(),
                 ))
                 await db.commit()

@@ -426,5 +426,75 @@ class AdminCommands(commands.Cog):
         except Exception:
             pass
 
+    # ── EXPORT DATA ────────────────────────────────────
+    @app_commands.command(name="export", description="Export campaign submission data")
+    @app_commands.describe(
+        campaign_id="Export data for a specific campaign",
+        format="File format (CSV or JSON)"
+    )
+    @app_commands.choices(format=[
+        app_commands.Choice(name="CSV", value="csv"),
+        app_commands.Choice(name="JSON", value="json")
+    ])
+    @admin_only()
+    async def export(self, interaction: discord.Interaction, campaign_id: str = None, format: str = "csv"):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+
+        import io
+        import csv
+        import json
+        import aiosqlite
+
+        async with aiosqlite.connect(self.db.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = """
+                SELECT 
+                    sv.*, 
+                    c.name as campaign_name,
+                    up.crypto_type,
+                    up.crypto_address,
+                    latest.views, latest.likes, latest.comments, latest.shares
+                FROM submitted_videos sv
+                LEFT JOIN campaigns c ON sv.campaign_id = c.id
+                LEFT JOIN user_payments up ON sv.discord_user_id = up.discord_user_id
+                LEFT JOIN (
+                    SELECT video_id, views, likes, comments, shares, MAX(id)
+                    FROM metric_snapshots
+                    GROUP BY video_id
+                ) latest ON sv.id = latest.video_id
+            """
+            params = []
+            if campaign_id:
+                query += " WHERE sv.campaign_id = ?"
+                params.append(campaign_id)
+            
+            async with db.execute(query, params) as cursor:
+                rows = [dict(row) for row in await cursor.fetchall()]
+
+        if not rows:
+            await interaction.followup.send("❌ No data found to export.", ephemeral=True)
+            return
+
+        if format == "json":
+            file_data = json.dumps(rows, indent=2, default=str)
+            file_obj = io.BytesIO(file_data.encode('utf-8'))
+            filename = "cliptea_export.json"
+        else:
+            output = io.StringIO()
+            if rows:
+                keys = rows[0].keys()
+                writer = csv.DictWriter(output, fieldnames=keys)
+                writer.writeheader()
+                writer.writerows(rows)
+            file_data = output.getvalue()
+            file_obj = io.BytesIO(file_data.encode('utf-8'))
+            filename = "cliptea_export.csv"
+
+        file = discord.File(file_obj, filename=filename)
+        await interaction.followup.send(f"✅ Exported **{len(rows)}** records.", file=file, ephemeral=True)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))

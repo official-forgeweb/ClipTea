@@ -231,6 +231,33 @@ class DatabaseManager:
                 return [dict(row) for row in await cursor.fetchall()]
 
     # ═══════════════════════════════════════════════
+    # USER PAYMENTS
+    # ═══════════════════════════════════════════════
+
+    async def set_user_payment(self, discord_user_id: str, crypto_type: str, crypto_address: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT INTO user_payments (discord_user_id, crypto_type, crypto_address, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(discord_user_id) DO UPDATE SET
+                       crypto_type = excluded.crypto_type,
+                       crypto_address = excluded.crypto_address,
+                       updated_at = excluded.updated_at""",
+                (discord_user_id, crypto_type, crypto_address)
+            )
+            await db.commit()
+            return True
+
+    async def get_user_payment(self, discord_user_id: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM user_payments WHERE discord_user_id = ?", (discord_user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    # ═══════════════════════════════════════════════
     # INSTAGRAM VERIFICATION CODES
     # ═══════════════════════════════════════════════
 
@@ -354,17 +381,18 @@ class DatabaseManager:
     async def submit_video(self, campaign_id: str, discord_user_id: str,
                            platform: str, video_url: str, video_id: str = "",
                            author_username: str = "", caption: str = "",
-                           is_verified: bool = False) -> Optional[int]:
+                           is_verified: bool = False, posted_at: str = None,
+                           tracking_expires_at: str = None) -> Optional[int]:
         """Submit a video. Returns the video record ID or None on duplicate."""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute(
                     """INSERT INTO submitted_videos 
                        (campaign_id, discord_user_id, platform, video_url, video_id,
-                        author_username, caption, is_verified)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        author_username, caption, is_verified, posted_at, tracking_expires_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (campaign_id, discord_user_id, platform, video_url, video_id,
-                     author_username, caption, is_verified)
+                     author_username, caption, is_verified, posted_at, tracking_expires_at)
                 )
                 await db.commit()
                 return cursor.lastrowid
@@ -430,10 +458,22 @@ class DatabaseManager:
             async with db.execute(
                 """SELECT sv.* FROM submitted_videos sv
                    JOIN campaigns c ON sv.campaign_id = c.id
-                   WHERE sv.status = 'tracking' AND c.status = 'active'
+                   WHERE sv.status = 'tracking' AND c.status = 'active' AND sv.is_final = 0
                    ORDER BY sv.submitted_at"""
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
+
+    async def mark_video_final(self, video_id: int, views: int, likes: int, comments: int) -> bool:
+        """Mark a video as final and save its terminal metrics."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """UPDATE submitted_videos 
+                   SET is_final = 1, final_views = ?, final_likes = ?, final_comments = ?
+                   WHERE id = ?""",
+                (views, likes, comments, video_id)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def update_video_status(self, video_id: int, status: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
@@ -507,10 +547,10 @@ class DatabaseManager:
         query = """
             SELECT 
                 COUNT(DISTINCT sv.id) as total_videos,
-                COALESCE(SUM(latest.views), 0) as grand_total_views,
-                COALESCE(SUM(latest.likes), 0) as total_likes,
-                COALESCE(SUM(latest.comments), 0) as total_comments,
-                COALESCE(SUM(latest.shares), 0) as total_shares
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0) as grand_total_views,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_likes ELSE latest.likes END), 0) as total_likes,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_comments ELSE latest.comments END), 0) as total_comments,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN 0 ELSE latest.shares END), 0) as total_shares
             FROM submitted_videos sv
             LEFT JOIN (
                 SELECT video_id, views, likes, comments, shares
@@ -519,7 +559,7 @@ class DatabaseManager:
                     SELECT MAX(id) FROM metric_snapshots m2 WHERE m2.video_id = m1.video_id
                 )
             ) latest ON sv.id = latest.video_id
-            WHERE sv.campaign_id = ? AND sv.status = 'tracking'
+            WHERE sv.campaign_id = ? AND sv.status != 'deleted'
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -535,10 +575,10 @@ class DatabaseManager:
         query = """
             SELECT 
                 COUNT(DISTINCT sv.id) as total_videos,
-                COALESCE(SUM(latest.views), 0) as total_views,
-                COALESCE(SUM(latest.likes), 0) as total_likes,
-                COALESCE(SUM(latest.comments), 0) as total_comments,
-                COALESCE(SUM(latest.shares), 0) as total_shares
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0) as total_views,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_likes ELSE latest.likes END), 0) as total_likes,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_comments ELSE latest.comments END), 0) as total_comments,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN 0 ELSE latest.shares END), 0) as total_shares
             FROM submitted_videos sv
             LEFT JOIN (
                 SELECT video_id, views, likes, comments, shares
@@ -547,7 +587,7 @@ class DatabaseManager:
                     SELECT MAX(id) FROM metric_snapshots m2 WHERE m2.video_id = m1.video_id
                 )
             ) latest ON sv.id = latest.video_id
-            WHERE sv.campaign_id = ? AND sv.discord_user_id = ? AND sv.status = 'tracking'
+            WHERE sv.campaign_id = ? AND sv.discord_user_id = ? AND sv.status != 'deleted'
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -563,10 +603,10 @@ class DatabaseManager:
         query = """
             SELECT 
                 COUNT(DISTINCT sv.id) as total_videos,
-                COALESCE(SUM(latest.views), 0) as total_views,
-                COALESCE(SUM(latest.likes), 0) as total_likes,
-                COALESCE(SUM(latest.comments), 0) as total_comments,
-                COALESCE(SUM(latest.shares), 0) as total_shares
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0) as total_views,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_likes ELSE latest.likes END), 0) as total_likes,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_comments ELSE latest.comments END), 0) as total_comments,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN 0 ELSE latest.shares END), 0) as total_shares
             FROM submitted_videos sv
             LEFT JOIN (
                 SELECT video_id, views, likes, comments, shares
@@ -599,12 +639,12 @@ class DatabaseManager:
                               limit: int = 10) -> List[Dict[str, Any]]:
         """Get leaderboard sorted by a metric. If campaign_id is None, global."""
         metric_col = {
-            "views": "COALESCE(SUM(latest.views), 0)",
-            "likes": "COALESCE(SUM(latest.likes), 0)",
+            "views": "COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0)",
+            "likes": "COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_likes ELSE latest.likes END), 0)",
             "videos": "COUNT(DISTINCT sv.id)",
-        }.get(metric, "COALESCE(SUM(latest.views), 0)")
+        }.get(metric, "COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0)")
 
-        where_clause = "WHERE sv.status = 'tracking'"
+        where_clause = "WHERE sv.status != 'deleted'"
         params = []
         if campaign_id:
             where_clause += " AND sv.campaign_id = ?"
@@ -614,9 +654,9 @@ class DatabaseManager:
             SELECT 
                 sv.discord_user_id,
                 COUNT(DISTINCT sv.id) as total_videos,
-                COALESCE(SUM(latest.views), 0) as total_views,
-                COALESCE(SUM(latest.likes), 0) as total_likes,
-                COALESCE(SUM(latest.comments), 0) as total_comments
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0) as total_views,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_likes ELSE latest.likes END), 0) as total_likes,
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_comments ELSE latest.comments END), 0) as total_comments
             FROM submitted_videos sv
             LEFT JOIN (
                 SELECT video_id, views, likes, comments, shares
@@ -643,7 +683,7 @@ class DatabaseManager:
             SELECT 
                 sv.platform,
                 COUNT(DISTINCT sv.id) as video_count,
-                COALESCE(SUM(latest.views), 0) as total_views
+                COALESCE(SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE latest.views END), 0) as total_views
             FROM submitted_videos sv
             LEFT JOIN (
                 SELECT video_id, views
@@ -652,7 +692,7 @@ class DatabaseManager:
                     SELECT MAX(id) FROM metric_snapshots m2 WHERE m2.video_id = m1.video_id
                 )
             ) latest ON sv.id = latest.video_id
-            WHERE sv.campaign_id = ? AND sv.status = 'tracking'
+            WHERE sv.campaign_id = ? AND sv.status != 'deleted'
             GROUP BY sv.platform
         """
         async with aiosqlite.connect(self.db_path) as db:

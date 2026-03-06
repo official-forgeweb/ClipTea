@@ -10,6 +10,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 # Database Path
 DATABASE_PATH = "campaign_data.db"
 
+# Server lock
+ALLOWED_GUILD_IDS = [
+    g.strip() for g in os.getenv("ALLOWED_GUILD_IDS", "").split(",") 
+    if g.strip()
+]
+
 # Proxies
 PROXY_FILE = "proxies.txt"
 ROTATING_PROXY_URL = os.getenv("ROTATING_PROXY_URL", None)

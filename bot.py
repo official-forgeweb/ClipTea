@@ -40,9 +40,8 @@ if sys.platform == 'win32':
 import discord
 from discord.ext import commands
 
-from config import DISCORD_TOKEN
+from config import DISCORD_TOKEN, DATABASE_PATH, ALLOWED_GUILD_IDS
 from database.models import init_database
-from config import DATABASE_PATH
 
 
 class CampaignBot(commands.Bot):
@@ -84,6 +83,7 @@ class CampaignBot(commands.Bot):
             "cogs.account_commands",
             "cogs.campaign_commands",
             "cogs.submission_commands",
+            "cogs.payment_commands",
             "cogs.stats_commands",
             "cogs.dashboard_commands",
             "cogs.help_commands",
@@ -131,6 +131,39 @@ class CampaignBot(commands.Bot):
                 name="campaigns | /help"
             )
         )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Global check: Only allow interactions in authorized guilds."""
+        if not ALLOWED_GUILD_IDS:
+            return True  # No lock configured
+            
+        if interaction.guild_id is None:
+            # DM or other context
+            return True
+            
+        if str(interaction.guild_id) in ALLOWED_GUILD_IDS:
+            return True
+            
+        # Not authorized
+        await interaction.response.send_message(
+            "❌ This bot is locked to private servers and is not authorized here.",
+            ephemeral=True
+        )
+        return False
+
+    async def on_guild_join(self, guild: discord.Guild):
+        """Auto-leave unauthorized guilds."""
+        if ALLOWED_GUILD_IDS and str(guild.id) not in ALLOWED_GUILD_IDS:
+            print(f"🚫 Joining unauthorized guild {guild.name} ({guild.id}). Leaving...")
+            try:
+                # Try to send a message first
+                for channel in guild.text_channels:
+                    if channel.permissions_for(guild.me).send_messages:
+                        await channel.send("❌ This bot is private and not authorized to run in this server. Leaving...")
+                        break
+            except:
+                pass
+            await guild.leave()
 
     async def on_command_error(self, ctx, error):
         """Global error handler for command prefixes (fallback)."""

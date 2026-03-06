@@ -96,11 +96,26 @@ CREATE TABLE IF NOT EXISTS submitted_videos (
     author_username TEXT DEFAULT '',
     caption TEXT DEFAULT '',
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    posted_at TIMESTAMP DEFAULT NULL,
+    tracking_expires_at TIMESTAMP DEFAULT NULL,
+    is_final INTEGER DEFAULT 0,
+    final_views INTEGER DEFAULT 0,
+    final_likes INTEGER DEFAULT 0,
+    final_comments INTEGER DEFAULT 0,
     is_verified BOOLEAN DEFAULT 0,
     status TEXT DEFAULT 'tracking' 
         CHECK(status IN ('tracking','stopped','rejected','deleted')),
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
     UNIQUE(campaign_id, video_url)
+);
+"""
+
+USER_PAYMENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS user_payments (
+    discord_user_id TEXT PRIMARY KEY,
+    crypto_type TEXT DEFAULT '',
+    crypto_address TEXT DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -175,6 +190,8 @@ async def init_database(db_path: str):
         await db.execute(USER_ACCOUNTS_TABLE)
         await db.execute(CAMPAIGN_MEMBERS_TABLE)
         await db.execute(SUBMITTED_VIDEOS_TABLE)
+        await _migrate_submitted_videos(db)
+        await db.execute(USER_PAYMENTS_TABLE)
         await db.execute(METRIC_SNAPSHOTS_TABLE)
         await db.execute(NOTIFICATIONS_TABLE)
         await db.execute(IG_VERIFICATION_CODES_TABLE)
@@ -220,3 +237,26 @@ async def _migrate_user_accounts(db):
         DROP TABLE user_accounts_old;
         PRAGMA foreign_keys = ON;
     """)
+
+
+async def _migrate_submitted_videos(db):
+    """Add new columns to submitted_videos for tracking validity. Runs safely on existing DBs."""
+    columns_to_add = [
+        ("posted_at", "TIMESTAMP DEFAULT NULL"),
+        ("tracking_expires_at", "TIMESTAMP DEFAULT NULL"),
+        ("is_final", "INTEGER DEFAULT 0"),
+        ("final_views", "INTEGER DEFAULT 0"),
+        ("final_likes", "INTEGER DEFAULT 0"),
+        ("final_comments", "INTEGER DEFAULT 0"),
+    ]
+    
+    for col_name, col_type in columns_to_add:
+        try:
+            # Check if column exists
+            async with db.execute(f"PRAGMA table_info(submitted_videos)") as cursor:
+                columns = [row[1] for row in await cursor.fetchall()]
+                if col_name not in columns:
+                    await db.execute(f"ALTER TABLE submitted_videos ADD COLUMN {col_name} {col_type}")
+        except Exception as e:
+            print(f"Migration error for {col_name}: {e}")
+    await db.commit()

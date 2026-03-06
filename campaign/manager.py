@@ -1,5 +1,6 @@
 import asyncio
-from typing import Dict, Any, Callable, Optional
+from typing import Dict, Any, List, Optional, Callable
+from datetime import datetime, timezone, timedelta
 from database.manager import DatabaseManager
 from anti_detection.proxy_rotator import ProxyRotator
 from anti_detection.rate_limiter import RateLimiter
@@ -84,6 +85,25 @@ class CampaignManager:
                     f"Scraping {platform} video {i + 1}/{len(videos)}..."
                 )
 
+            # Check for 24h expiration
+            exp_at_str = video.get('tracking_expires_at')
+            if exp_at_str:
+                try:
+                    exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > exp_at:
+                        # Finalize it
+                        metrics = await self.db.get_latest_metrics(video_id)
+                        await self.db.mark_video_final(
+                            video_id,
+                            metrics.get('views', 0),
+                            metrics.get('likes', 0),
+                            metrics.get('comments', 0)
+                        )
+                        print(f"[CampaignManager] Finalized expired video {video_id}")
+                        continue
+                except:
+                    pass
+
             try:
                 metrics = await self.scrape_video_metrics(video_url, platform)
                 if metrics:
@@ -129,6 +149,23 @@ class CampaignManager:
                 await progress_callback(
                     f"Scraping {platform} video {i + 1}/{len(videos)}..."
                 )
+
+            # Expiration check
+            exp_at_str = video.get('tracking_expires_at')
+            if exp_at_str:
+                try:
+                    exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > exp_at:
+                        # Finalize
+                        metrics = await self.db.get_latest_metrics(video_id)
+                        await self.db.mark_video_final(
+                            video_id,
+                            metrics.get('views', 0),
+                            metrics.get('likes', 0),
+                            metrics.get('comments', 0)
+                        )
+                        continue
+                except: pass
 
             try:
                 metrics = await self.scrape_video_metrics(video_url, platform)
