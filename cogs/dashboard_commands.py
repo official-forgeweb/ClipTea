@@ -20,7 +20,7 @@ class DashboardCommands(commands.Cog):
     @admin_only()
     async def dashboard(self, interaction: discord.Interaction):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             

@@ -21,7 +21,7 @@ class StatsCommands(commands.Cog):
     @app_commands.describe(user="View another user's stats (admin only)")
     async def stats(self, interaction: discord.Interaction, user: discord.Member = None):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             
@@ -185,7 +185,7 @@ class StatsCommands(commands.Cog):
         metric: app_commands.Choice[str] = None,
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return  # Interaction expired before we could respond
 
@@ -276,7 +276,7 @@ class StatsCommands(commands.Cog):
     @app_commands.describe(campaign_id="Campaign to view stats for")
     async def campaign_statistics(self, interaction: discord.Interaction, campaign_id: str):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             

@@ -141,7 +141,7 @@ class SubmissionCommands(commands.Cog):
             progress_msg = await interaction.followup.send(
                 embed=discord.Embed(
                     title="⏳ Scraping Video...",
-                    description=f"Fetching data from {platform.title()}...\nThis may take up to 60 seconds (Apify).",
+                    description=f"Fetching data from {platform.title()}...\nThis may take up to 60 seconds.",
                     color=discord.Color.gold()
                 ),
                 wait=True,
@@ -258,11 +258,11 @@ class SubmissionCommands(commands.Cog):
         )
         
         if platform == "instagram" and video_data.get("estimated", False):
-            embed.set_footer(text="⚠️ Apify extraction failed; metrics are estimated.")
+            embed.set_footer(text="⚠️ Tracking partially applied; metrics are estimated.")
         elif platform == "instagram" and video_data.get("cached", False):
-            embed.set_footer(text="🔄 Fetched from Apify Cache")
-        elif platform == "instagram" and video_data.get("method") == "apify":
-            embed.set_footer(text="✅ Apify Live Fetch")
+            embed.set_footer(text="🔄 Fetched from Cache")
+        elif platform == "instagram" and video_data.get("method") == "live":
+            embed.set_footer(text="✅ Live Fetch")
 
         try:
             await progress_msg.edit(embed=embed)
@@ -298,7 +298,7 @@ class SubmissionCommands(commands.Cog):
         try:
             user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
             return [
-                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
                 for c in user_campaigns
                 if c.get('member_status') == 'active' and c.get('status') == 'active'
                 and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
@@ -328,7 +328,7 @@ class SubmissionCommands(commands.Cog):
                 color=discord.Color.blue()
             )
             try:
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except:
                 pass
             return
@@ -363,16 +363,16 @@ class SubmissionCommands(commands.Cog):
             embed.set_footer(text=f"Showing 10 of {len(videos)} videos")
     
         try:
-            await interaction.followup.send(embed=embed)
-        except:
-            pass
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            print(f"[REEL] my_videos send error: {e}")
 
     @my_videos.autocomplete("campaign_id")
     async def my_videos_autocomplete(self, interaction: discord.Interaction, current: str):
         try:
             user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
             return [
-                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
                 for c in user_campaigns
                 if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
             ][:25]
@@ -452,9 +452,9 @@ class SubmissionCommands(commands.Cog):
                 )
     
         try:
-            await interaction.followup.send(embed=embed)
-        except:
-            pass
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            print(f"[REEL] my_videos send error: {e}")
 
     # ── DELETE VIDEO ───────────────────────────────────
     @app_commands.command(name="delete_video", description="Delete a submitted video from tracking")
@@ -491,7 +491,7 @@ class SubmissionCommands(commands.Cog):
         is_owner = video['discord_user_id'] == str(interaction.user.id)
 
         if not is_owner and not user_is_admin:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You can only delete your own videos.", ephemeral=True
             )
             return
@@ -504,7 +504,7 @@ class SubmissionCommands(commands.Cog):
                 color=discord.Color.red()
             )
             try:
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except:
                 pass
         else:

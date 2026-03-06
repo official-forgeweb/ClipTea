@@ -71,7 +71,7 @@ class ApifyInstagramService:
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
         
-        print(f"[Apify] Using database: {self.db_path}")
+        print(f"[REEL] Using database: {self.db_path}")
     
     async def init_tables(self):
         """Create cache and usage tables if they don't exist."""
@@ -105,9 +105,9 @@ class ApifyInstagramService:
                 """)
                 
                 await db.commit()
-                print(f"[Apify] Database tables ready at {self.db_path}")
+                print(f"[REEL] Database tables ready at {self.db_path}")
         except Exception as e:
-            print(f"[Apify] Database init error: {e}")
+            print(f"[REEL] Database init error: {e}")
             # If table exists with wrong schema, try to fix it
             try:
                 async with aiosqlite.connect(self.db_path) as db:
@@ -125,9 +125,9 @@ class ApifyInstagramService:
                     except:
                         pass
                     await db.commit()
-                    print("[Apify] Database tables fixed")
+                    print("[REEL] Database tables fixed")
             except Exception as e2:
-                print(f"[Apify] Could not fix tables: {e2}")
+                print(f"[REEL] Could not fix tables: {e2}")
     
     async def get_video_metrics(self, video_url: str) -> dict:
         """
@@ -195,8 +195,8 @@ class ApifyInstagramService:
             timeout = aiohttp.ClientTimeout(total=60)  # 60 second max
             
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                print(f"[Apify] Calling: {self.BASE_URL}/acts/{self.actor_id}/run-sync-get-dataset-items")
-                print(f"[Apify] Payload: {json.dumps(payload)}")
+                print(f"[REEL] Calling: {self.BASE_URL}/acts/{self.actor_id}/run-sync-get-dataset-items")
+                print(f"[REEL] Payload: {json.dumps(payload)}")
                 
                 async with session.post(url, json=payload, headers=headers) as resp:
                     response_text = await resp.text()
@@ -227,8 +227,8 @@ class ApifyInstagramService:
                         return {"error": "Unexpected response format"}
                     
                     # Extract metrics from item
-                    print(f"[Apify] RAW KEYS: {list(item.keys())}")
-                    print(f"[Apify] RAW DATA: {json.dumps(item, indent=2, default=str)[:3000]}")
+                    print(f"[REEL] RAW KEYS: {list(item.keys())}")
+                    print(f"[REEL] RAW DATA: {json.dumps(item, indent=2, default=str)[:3000]}")
                     return self._parse_apify_response(item)
         
         except asyncio.TimeoutError:
@@ -329,7 +329,7 @@ class ApifyInstagramService:
         except (ValueError, TypeError):
             shares = 0
         
-        print(f"[Apify] Parsed: views={views}, likes={likes}, comments={comments}, author={author}")
+        print(f"[REEL] Parsed: views={views}, likes={likes}, comments={comments}, author={author}")
         
         return {
             "views": views,
@@ -338,7 +338,7 @@ class ApifyInstagramService:
             "shares": shares,
             "author_username": author,
             "caption": str(caption)[:200],
-            "method": "apify",
+            "method": "live",
             "estimated": False,
             "cached": False,
         }
@@ -364,7 +364,7 @@ class ApifyInstagramService:
                 if cache_age > timedelta(minutes=self.cache_duration_minutes):
                     return None  # Expired
                 
-                print(f"[Apify] Cache hit for {shortcode} (age: {cache_age})")
+                print(f"[REEL] Cache hit for {shortcode} (age: {cache_age})")
                 
                 return {
                     "views": row["views"],
@@ -372,7 +372,7 @@ class ApifyInstagramService:
                     "comments": row["comments"],
                     "shares": row["shares"] if "shares" in row.keys() else 0,
                     "author_username": row["author_username"],
-                    "method": "apify_cache",
+                    "method": "cache",
                     "estimated": False,
                     "cached": True,
                     "cache_age_minutes": int(cache_age.total_seconds() / 60),

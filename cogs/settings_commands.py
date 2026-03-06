@@ -19,7 +19,7 @@ class SettingsCommands(commands.Cog):
     @admin_only()
     async def settings_view(self, interaction: discord.Interaction):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except:
             return
         settings = await self.db.get_all_settings()
@@ -92,7 +92,7 @@ class SettingsCommands(commands.Cog):
         admin_role: discord.Role = None,
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except:
             return
         updated = []
@@ -165,7 +165,7 @@ class SettingsCommands(commands.Cog):
         notification_type: app_commands.Choice[str] = None,
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except:
             return
         await self.db.set_setting("notification_channel_id", str(channel.id))
@@ -199,7 +199,7 @@ class SettingsCommands(commands.Cog):
         channel: discord.TextChannel = None,
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except:
             return
         await self.db.set_setting("daily_summary_enabled", "true" if enabled else "false")

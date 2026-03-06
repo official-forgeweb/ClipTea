@@ -48,7 +48,7 @@ class AdminCommands(commands.Cog):
         auto_stop: bool = True
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except (discord.errors.NotFound, Exception):
             return  # Interaction expired or network error — can't respond
 
@@ -89,7 +89,7 @@ class AdminCommands(commands.Cog):
                 value=f"`/join {campaign_id}`",
                 inline=False
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
             # Send notification
             channel_id = await self.db.get_setting("notification_channel_id")
@@ -144,7 +144,7 @@ class AdminCommands(commands.Cog):
         status: app_commands.Choice[str] = None,
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             
@@ -190,7 +190,7 @@ class AdminCommands(commands.Cog):
             embed.title = "✅ Campaign Updated"
             changes = ", ".join(f"**{k}**" for k in kwargs.keys())
             embed.description = f"Updated: {changes}"
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             try:
                 await interaction.followup.send(
@@ -225,7 +225,7 @@ class AdminCommands(commands.Cog):
         reason: str = "Manually ended by admin"
     ):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             
@@ -307,7 +307,7 @@ class AdminCommands(commands.Cog):
                 plat_text += f"{emoji} {plat['platform'].title()}: {format_number(plat['total_views'])} views ({pct:.1f}%)\n"
             embed.add_field(name="📱 PLATFORM BREAKDOWN", value=plat_text, inline=False)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @end_campaign.autocomplete("campaign_id")
     async def end_campaign_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -327,7 +327,7 @@ class AdminCommands(commands.Cog):
     @admin_only()
     async def delete_campaign(self, interaction: discord.Interaction, campaign_id: str):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             
@@ -349,7 +349,7 @@ class AdminCommands(commands.Cog):
                 color=discord.Color.red()
             )
             try:
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except:
                 pass
         else:
@@ -365,7 +365,7 @@ class AdminCommands(commands.Cog):
         try:
             campaigns = await self.db.get_all_campaigns()
             return [
-                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
                 for c in campaigns
                 if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
             ][:25]
@@ -373,12 +373,12 @@ class AdminCommands(commands.Cog):
             return []
 
     # ── API USAGE ──────────────────────────────────────
-    @app_commands.command(name="api_usage", description="View Apify API usage statistics")
+    @app_commands.command(name="api_usage", description="View API usage statistics")
     @app_commands.describe(days="Number of days to look back (default: 7)")
     @admin_only()
     async def api_usage(self, interaction: discord.Interaction, days: int = 7):
         try:
-            await interaction.response.defer(ephemeral=False)
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
 
@@ -387,7 +387,7 @@ class AdminCommands(commands.Cog):
         stats = await apify_service.get_usage_stats(days=days)
 
         embed = discord.Embed(
-            title="📊 Apify API Usage",
+            title="📊 API Usage",
             description=f"Statistics for the past **{days} days**",
             color=discord.Color.blue()
         )

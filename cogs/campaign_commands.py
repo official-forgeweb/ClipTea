@@ -137,7 +137,7 @@ class CampaignCommands(commands.Cog):
         try:
             campaigns = await self.db.get_active_campaigns()
             return [
-                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
                 for c in campaigns
                 if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
             ][:25]
@@ -185,7 +185,7 @@ class CampaignCommands(commands.Cog):
         try:
             user_campaigns = await self.db.get_user_campaigns(str(interaction.user.id))
             return [
-                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                app_commands.Choice(name=f"[{c['id']}] {c['name']}", value=c['id'])
                 for c in user_campaigns
                 if c.get('member_status') == 'active'
                 and (current.lower() in c['name'].lower() or current.lower() in c['id'].lower())
@@ -196,7 +196,7 @@ class CampaignCommands(commands.Cog):
     @app_commands.command(name="my_campaigns", description="View campaigns you are part of")
     async def my_campaigns(self, interaction: discord.Interaction):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             
@@ -256,7 +256,7 @@ class CampaignCommands(commands.Cog):
     @app_commands.command(name="list_campaigns", description="List all campaigns")
     async def list_campaigns(self, interaction: discord.Interaction):
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
             return
             

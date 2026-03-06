@@ -396,14 +396,14 @@ class DatabaseManager:
             if campaign_id:
                 query = """SELECT sv.*, c.name as campaign_name 
                            FROM submitted_videos sv
-                           JOIN campaigns c ON sv.campaign_id = c.id
+                           LEFT JOIN campaigns c ON sv.campaign_id = c.id
                            WHERE sv.discord_user_id = ? AND sv.campaign_id = ?
                            ORDER BY sv.submitted_at DESC"""
                 params = (discord_user_id, campaign_id)
             else:
                 query = """SELECT sv.*, c.name as campaign_name
                            FROM submitted_videos sv
-                           JOIN campaigns c ON sv.campaign_id = c.id
+                           LEFT JOIN campaigns c ON sv.campaign_id = c.id
                            WHERE sv.discord_user_id = ?
                            ORDER BY sv.submitted_at DESC"""
                 params = (discord_user_id,)
