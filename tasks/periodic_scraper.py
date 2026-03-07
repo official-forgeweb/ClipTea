@@ -35,10 +35,12 @@ class PeriodicScraper(commands.Cog):
                 except ValueError:
                     pass
 
-            # Initialize proxy rotator if not yet done
+            # Skip the very first run on startup to avoid "testing" delay
             if not self._initialized:
                 await self.campaign_mgr.initialize()
                 self._initialized = True
+                print("[SCRAPER] Startup complete. First scheduled scrape will run later.")
+                return
 
             # Scrape all active tracking videos
             summary = await self.campaign_mgr.scrape_all_tracking_videos()
@@ -75,6 +77,8 @@ class PeriodicScraper(commands.Cog):
                                 inline=False
                             )
                         await channel.send(embed=embed)
+                except discord.Forbidden:
+                    print(f"[SCRAPER] Permission error: Bot cannot send messages in notification channel ({channel_id}). Please check channel permissions.")
                 except Exception as e:
                     print(f"[SCRAPER] Error sending notification: {e}")
 

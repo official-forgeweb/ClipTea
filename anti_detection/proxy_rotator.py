@@ -5,29 +5,77 @@ from typing import Optional, List
 from config import FREE_PROXY_SOURCES, PROXY_TEST_URL, PROXY_TEST_TIMEOUT, PROXY_REFRESH_INTERVAL, ROTATING_PROXY_URL, PROXY_FILE
 
 class ProxyRotator:
-    def __init__(self):
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ProxyRotator, cls).__new__(cls)
+            cls._instance._init_once()
+        return cls._instance
+
+    def _init_once(self):
         self._working_proxies: List[str] = []
         self._dead_proxies: set[str] = set()
         self._current_index: int = 0
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._fetching = False
         
     async def initialize(self):
-        """Fetch and test free proxies on startup."""
-        if self._initialized and self._working_proxies:
+        """Fetch and test free proxies in the background."""
+        if self._initialized:
             return
             
-        print("[PROXY] Fetching fresh proxies from internet sources...")
-        raw_proxies = await self._fetch_free_proxies()
-        self._working_proxies = await self._test_proxies(raw_proxies)
-        
-        if not self._working_proxies:
-            print("[PROXY] Critical: No working proxies found. Retrying with a larger sample...")
-            # Try a larger sample if first one failed
-            self._working_proxies = await self._test_proxies(raw_proxies, max_concurrent=30)
+        async with self._lock:
+            if hasattr(self, "_fetching") and self._fetching:
+                return
+            self._fetching = True
+
+        print("[PROXY] Triggering background proxy fetch...")
+        # Run the actual fetching and testing in a background task
+        asyncio.create_task(self._do_initialize())
+
+    async def _do_initialize(self):
+        """Perform the actual fetching and testing."""
+        try:
+            raw_proxies = await self._fetch_free_proxies()
+            if not raw_proxies:
+                print("[PROXY] No proxies found to test.")
+                self._fetching = False
+                return
+
+            # Test a small batch first for quick availability
+            quick_sample = raw_proxies[:100]
+            working = await self._test_proxies(quick_sample, max_concurrent=15)
             
-        self._initialized = True
-        print(f"[PROXY] {len(self._working_proxies)} working proxies found")
+            async with self._lock:
+                self._working_proxies.extend(working)
+            
+            if self._working_proxies:
+                print(f"[PROXY] {len(self._working_proxies)} quick proxies found. Commands ready.")
+
+            # Only fetch more if we have very few
+            if len(self._working_proxies) < 30:
+                remaining = raw_proxies[100:]
+                if remaining:
+                    batch_size = 100
+                    # Limit total testing to 300 proxies max for free sources
+                    for i in range(0, min(300, len(remaining)), batch_size):
+                        if len(self._working_proxies) >= 60:
+                            break # We have plenty for free rotation
+                            
+                        batch = remaining[i:i + batch_size]
+                        working_batch = await self._test_proxies(batch, max_concurrent=20)
+                        async with self._lock:
+                            self._working_proxies = list(set(self._working_proxies + working_batch))
+                        await asyncio.sleep(2) # Long wait between batches
+
+            self._initialized = True
+            print(f"[PROXY] Total {len(self._working_proxies)} working proxies ready for sharing.")
+        except Exception as e:
+            print(f"[PROXY] Error in background initialization: {e}")
+        finally:
+            self._fetching = False
 
     async def _fetch_free_proxies(self) -> List[str]:
         """Download proxy lists from free public sources."""

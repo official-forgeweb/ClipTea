@@ -61,61 +61,86 @@ class IGBioVerifier:
             return False
 
     async def _check(self, username: str, code: str) -> bool:
-        # Get a proxy if rotator is provided
-        proxy_config = None
-        if self.proxy_rotator:
-            proxy_dict = await self.proxy_rotator.get_proxy()
-            if proxy_dict:
-                server = proxy_dict['server']
-                user = proxy_dict.get('username')
-                pw = proxy_dict.get('password')
-                if user and pw:
-                    # Format: http://user:pass@host:port
-                    from urllib.parse import urlparse
-                    p = urlparse(server)
-                    proxy_config = f"{p.scheme}://{user}:{pw}@{p.hostname}:{p.port}"
-                else:
-                    proxy_config = server
-                log.info("[IGBioVerifier] Using proxy: %s", server)
-            else:
-                log.info("[IGBioVerifier] No working proxies available, using direct connection.")
-        else:
-            log.info("[IGBioVerifier] Proxy rotation not enabled, using direct connection.")
+        """
+        Main check logic with a retry loop using different proxies.
+        """
+        attempts = 3
+        last_exception = None
+        
+        for attempt in range(attempts):
+            proxy_config = None
+            server_display = "Direct"
+            
+            if self.proxy_rotator:
+                proxy_dict = await self.proxy_rotator.get_proxy()
+                if proxy_dict:
+                    server = proxy_dict['server']
+                    user = proxy_dict.get('username')
+                    pw = proxy_dict.get('password')
+                    if user and pw:
+                        from urllib.parse import urlparse
+                        p = urlparse(server)
+                        proxy_config = f"{p.scheme}://{user}:{pw}@{p.hostname}:{p.port}"
+                    else:
+                        proxy_config = server
+                    server_display = server
+                    log.info("[IGBioVerifier] Attempt %d/%d using proxy: %s", attempt + 1, attempts, server_display)
+            
+            try:
+                async with httpx.AsyncClient(
+                    headers=_HEADERS,
+                    follow_redirects=True,
+                    timeout=15.0, # Shorter timeout per attempt
+                    proxy=proxy_config
+                ) as client:
+                    
+                    # 1. Try JSON API (only on first attempt, as it's most sensitive)
+                    if attempt == 0:
+                        bio = await self._try_json_api(client, username)
+                        if bio and code.lower() in bio.lower():
+                            log.info("[IGBioVerifier] Code found via JSON API for @%s", username)
+                            return True
 
-        async with httpx.AsyncClient(
-            headers=_HEADERS,
-            follow_redirects=True,
-            timeout=self.timeout - 2.0,
-            proxy=proxy_config
-        ) as client:
-            # 1. Try JSON API first (most accurate, least reliable due to blocks)
-            bio = await self._try_json_api(client, username)
-            if bio and code.lower() in bio.lower():
-                log.info("[IGBioVerifier] Code found via JSON API for @%s", username)
-                return True
+                    # 2. Try HTML scraping
+                    html = await self._get_html(client, username)
+                    if html:
+                        if html == "PRIVATE_ACCOUNT_DETECTED":
+                            log.warning("[IGBioVerifier] @%s is PRIVATE. Verification impossible.", username)
+                            return False # Private accounts can't be verified via bio scraping
+                            
+                        # Success! We got the page.
+                        if code.lower() in html.lower():
+                            log.info("[IGBioVerifier] Code found in HTML for @%s (Attempt %d)", username, attempt + 1)
+                            return True
+                        
+                        # Check specific extractions for logging
+                        bio_script = self._extract_bio_from_script(html)
+                        if bio_script and code.lower() in bio_script.lower():
+                            return True
+                            
+                        meta_bio = self._extract_bio_from_meta(html)
+                        if meta_bio and code.lower() in meta_bio.lower():
+                            return True
+                        
+                        # If we got the HTML but code wasn't found, it's likely not there.
+                        # However, we'll try one more proxy just in case we got a partial page or wrong language.
+                        log.debug("[IGBioVerifier] HTML loaded but code not found for @%s. Retrying...", username)
+                    else:
+                        log.debug("[IGBioVerifier] Failed to get HTML for @%s via %s. Retrying...", username, server_display)
+                        # Mark proxy as failed if it was blocked
+                        if self.proxy_rotator and proxy_config:
+                            await self.proxy_rotator.mark_failed(server_display)
 
-            # 2. Try HTML scraping (more reliable)
-            html = await self._get_html(client, username)
-            if not html:
-                return False
+            except Exception as e:
+                log.error("[IGBioVerifier] Attempt %d failed: %s", attempt + 1, e)
+                last_exception = e
+                if self.proxy_rotator and proxy_config:
+                    await self.proxy_rotator.mark_failed(server_display)
+            
+            # Small delay between retries
+            await asyncio.sleep(1.5)
 
-            # Is the code anywhere in the HTML? (Safest fallback if page loaded)
-            if code.lower() in html.lower():
-                log.info("[IGBioVerifier] Code found anywhere in HTML for @%s", username)
-                return True
-
-            # Try specific bio extractions for logging/confirmation
-            bio_script = self._extract_bio_from_script(html)
-            if bio_script and code.lower() in bio_script.lower():
-                log.info("[IGBioVerifier] Code found in script bio for @%s", username)
-                return True
-
-            meta_bio = self._extract_bio_from_meta(html)
-            if meta_bio and code.lower() in meta_bio.lower():
-                log.info("[IGBioVerifier] Code found in meta bio for @%s", username)
-                return True
-
-        log.warning("[IGBioVerifier] Code NOT found for @%s (checked API, Script, Meta, and Full HTML)", username)
+        log.warning("[IGBioVerifier] Verification failed for @%s after %d attempts.", username, attempts)
         return False
 
     async def _try_json_api(self, client: httpx.AsyncClient, username: str) -> Optional[str]:
@@ -137,17 +162,29 @@ class IGBioVerifier:
         try:
             url = f"https://www.instagram.com/{username}/"
             resp = await client.get(url)
+            
+            if resp.status_code == 404:
+                log.warning("[IGBioVerifier] Profile @%s NOT FOUND (404).", username)
+                return None
+                
             if resp.status_code != 200:
                 log.debug("[IGBioVerifier] HTML fetch failed for @%s (Status: %s)", username, resp.status_code)
                 return None
             
             # Check for login redirection
-            if "login" in str(resp.url).lower() and "login" not in url:
-                log.warning("[IGBioVerifier] Redirected to login for @%s. Proxy may be flagged.", username)
-                # We can't see the bio on a login screen
+            final_url = str(resp.url).lower()
+            if "login" in final_url and "login" not in url.lower():
+                log.warning("[IGBioVerifier] Redirected to login for @%s. Proxy is blocked.", username)
                 return None
                 
-            return resp.text
+            text = resp.text
+            
+            # Check for private account
+            if "This Account is Private" in text or "is_private\":true" in text.lower():
+                log.warning("[IGBioVerifier] Account @%s is PRIVATE. Cannot read bio.", username)
+                return "PRIVATE_ACCOUNT_DETECTED" # Special token
+                
+            return text
         except Exception as exc:
             log.debug("[IGBioVerifier] HTML fetch error for @%s: %s", username, exc)
         return None

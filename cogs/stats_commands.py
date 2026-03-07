@@ -99,6 +99,9 @@ class StatsCommands(commands.Cog):
         total_videos = all_stats.get('total_videos', 0)
         total_likes = all_stats.get('total_likes', 0)
         total_comments = all_stats.get('total_comments', 0)
+        
+        avg_views = total_views // total_videos if total_videos > 0 else 0
+        avg_likes = total_likes // total_videos if total_videos > 0 else 0
 
         # Calculate total earnings across all campaigns
         total_earned = 0
@@ -108,11 +111,13 @@ class StatsCommands(commands.Cog):
             total_earned += calculate_earnings(c_stats.get('total_views', 0), rate)
 
         embed.add_field(name="═══ 📈 ALL-TIME STATISTICS ═══", value="\u200b", inline=False)
-        embed.add_field(name="🎬 Videos", value=format_number(total_videos), inline=True)
-        embed.add_field(name="👁️ Views", value=format_number(total_views), inline=True)
-        embed.add_field(name="❤️ Likes", value=format_number(total_likes), inline=True)
-        embed.add_field(name="💬 Comments", value=format_number(total_comments), inline=True)
+        embed.add_field(name="🎬 Total Videos", value=format_number(total_videos), inline=True)
+        embed.add_field(name="👁️ Total Views", value=format_number(total_views), inline=True)
         embed.add_field(name="💰 Total Earned", value=format_currency(total_earned), inline=True)
+        
+        embed.add_field(name="❤️ Total Likes", value=format_number(total_likes), inline=True)
+        embed.add_field(name="💬 Total Comments", value=format_number(total_comments), inline=True)
+        embed.add_field(name="📊 Avg. Views/Video", value=format_compact(avg_views), inline=True)
 
         # Campaign history
         if user_campaigns:
@@ -138,22 +143,14 @@ class StatsCommands(commands.Cog):
 
         # Achievements
         achievements = []
-        if total_videos >= 1:
-            achievements.append("🌟 First Clip Submitted")
-        if total_videos >= 10:
-            achievements.append("🔥 10+ Videos Submitted")
-        if total_videos >= 50:
-            achievements.append("⚡ 50+ Videos Submitted")
-        if total_views >= 1_000_000:
-            achievements.append("👑 1M+ Total Views")
-        if total_views >= 5_000_000:
-            achievements.append("💎 5M+ Total Views")
-        if total_views >= 10_000_000:
-            achievements.append("🏆 10M+ Total Views")
-        if total_earned >= 100:
-            achievements.append("💵 $100+ Earned")
-        if total_earned >= 500:
-            achievements.append("💰 $500+ Earned")
+        if total_videos >= 1: achievements.append("🌟 First Clip Submitted")
+        if total_videos >= 10: achievements.append("🔥 10+ Videos Submitted")
+        if total_videos >= 50: achievements.append("⚡ 50+ Videos Submitted")
+        if total_views >= 1_000_000: achievements.append("👑 1M+ Total Views")
+        if total_views >= 5_000_000: achievements.append("💎 5M+ Total Views")
+        if total_views >= 10_000_000: achievements.append("🏆 10M+ Total Views")
+        if total_earned >= 100: achievements.append("💵 $100+ Earned")
+        if total_earned >= 500: achievements.append("💰 $500+ Earned")
 
         if achievements:
             embed.add_field(
@@ -187,7 +184,7 @@ class StatsCommands(commands.Cog):
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.errors.NotFound:
-            return  # Interaction expired before we could respond
+            return
 
         metric_value = metric.value if metric else "views"
         entries = await self.db.get_leaderboard(campaign_id, metric=metric_value, limit=10)
@@ -201,7 +198,6 @@ class StatsCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
 
-        # Determine rate for earnings
         rate = 10.0
         campaign_name = "Global"
         if campaign_id:
@@ -220,7 +216,6 @@ class StatsCommands(commands.Cog):
         leaderboard_text += "──  ──────────────── ─────── ──────────  ─────────\n"
 
         for i, entry in enumerate(entries, 1):
-            # Get user display name
             try:
                 member = interaction.guild.get_member(int(entry['discord_user_id']))
                 display_name = member.display_name[:16] if member else f"User {entry['discord_user_id'][:8]}"
@@ -239,7 +234,6 @@ class StatsCommands(commands.Cog):
         leaderboard_text += "```"
         embed.add_field(name="\u200b", value=leaderboard_text, inline=False)
 
-        # Show caller's position
         all_entries = await self.db.get_leaderboard(campaign_id, metric=metric_value, limit=100)
         user_pos = None
         for i, entry in enumerate(all_entries, 1):
@@ -266,12 +260,10 @@ class StatsCommands(commands.Cog):
                 if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
             ]
             return choices[:25]
-        except discord.errors.NotFound:
-            return []  # Interaction expired — autocomplete timeout
-        except Exception:
+        except:
             return []
 
-
+    # ── CAMPAIGN STATISTICS ────────────────────────────
     @app_commands.command(name="campaign_statistics", description="View detailed statistics for a campaign")
     @app_commands.describe(campaign_id="Campaign to view stats for")
     async def campaign_statistics(self, interaction: discord.Interaction, campaign_id: str):
@@ -313,7 +305,6 @@ class StatsCommands(commands.Cog):
                 inline=False
             )
 
-        # Platform breakdown
         breakdown = await self.db.get_campaign_platform_breakdown(campaign_id)
         if breakdown:
             plat_text = ""
@@ -329,7 +320,7 @@ class StatsCommands(commands.Cog):
             pass
 
     @campaign_statistics.autocomplete("campaign_id")
-    async def stats_autocomplete(self, interaction: discord.Interaction, current: str):
+    async def stats_campaign_autocomplete(self, interaction: discord.Interaction, current: str):
         try:
             campaigns = await self.db.get_all_campaigns()
             return [

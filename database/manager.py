@@ -413,7 +413,7 @@ class DatabaseManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM submitted_videos WHERE campaign_id = ? AND status = 'tracking' ORDER BY submitted_at DESC",
+                "SELECT * FROM submitted_videos WHERE campaign_id = ? AND status != 'deleted' ORDER BY submitted_at DESC",
                 (campaign_id,)
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
@@ -425,14 +425,14 @@ class DatabaseManager:
                 query = """SELECT sv.*, c.name as campaign_name 
                            FROM submitted_videos sv
                            LEFT JOIN campaigns c ON sv.campaign_id = c.id
-                           WHERE sv.discord_user_id = ? AND sv.campaign_id = ?
+                           WHERE sv.discord_user_id = ? AND sv.campaign_id = ? AND sv.status != 'deleted'
                            ORDER BY sv.submitted_at DESC"""
                 params = (discord_user_id, campaign_id)
             else:
                 query = """SELECT sv.*, c.name as campaign_name
                            FROM submitted_videos sv
                            LEFT JOIN campaigns c ON sv.campaign_id = c.id
-                           WHERE sv.discord_user_id = ?
+                           WHERE sv.discord_user_id = ? AND sv.status != 'deleted'
                            ORDER BY sv.submitted_at DESC"""
                 params = (discord_user_id,)
             async with db.execute(query, params) as cursor:

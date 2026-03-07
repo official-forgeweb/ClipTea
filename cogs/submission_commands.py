@@ -157,6 +157,10 @@ class SubmissionCommands(commands.Cog):
             if not account:
                 results.append(f"❌ `{url[:30]}...` — Link {platform.title()} first")
                 continue
+                
+            if not account.get('verified'):
+                results.append(f"❌ `{url[:30]}...` — Account @{account['platform_username']} is NOT verified")
+                continue
 
             # Check duplicates (same campaign + url)
             existing = await self.db.get_submitted_video_by_url(campaign_id, norm_url)
@@ -390,8 +394,11 @@ class SubmissionCommands(commands.Cog):
                 self.update_buttons()
                 await btn_interaction.response.edit_message(embed=await build_page(self.current_page), view=self)
 
-        view = Paginator(0) if len(pages) > 1 else None
-        await interaction.followup.send(embed=await build_page(0), view=view, ephemeral=True)
+        if len(pages) > 1:
+            view = Paginator(0)
+            await interaction.followup.send(embed=await build_page(0), view=view, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=await build_page(0), ephemeral=True)
 
     @my_videos.autocomplete("campaign_id")
     async def my_videos_autocomplete(self, interaction: discord.Interaction, current: str):

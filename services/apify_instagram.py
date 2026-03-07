@@ -125,6 +125,14 @@ class ApifyInstagramService:
                         await db.execute("ALTER TABLE apify_cache ADD COLUMN shares INTEGER DEFAULT 0")
                     except:
                         pass
+                    try:
+                        await db.execute("ALTER TABLE apify_cache ADD COLUMN posted_at TIMESTAMP DEFAULT NULL")
+                    except:
+                        pass
+                    try:
+                        await db.execute("ALTER TABLE apify_cache ADD COLUMN caption TEXT DEFAULT ''")
+                    except:
+                        pass
                     await db.commit()
                     print("[REEL] Database tables fixed")
             except Exception as e2:

@@ -159,7 +159,10 @@ CREATE TABLE IF NOT EXISTS apify_cache (
     views INTEGER DEFAULT 0,
     likes INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
     author_username TEXT DEFAULT '',
+    caption TEXT DEFAULT '',
+    posted_at TIMESTAMP DEFAULT NULL,
     raw_response TEXT DEFAULT '',
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -173,6 +176,7 @@ CREATE TABLE IF NOT EXISTS api_usage (
     shortcode TEXT DEFAULT '',
     credits_used REAL DEFAULT 0,
     success INTEGER DEFAULT 0,
+    error_message TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """

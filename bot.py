@@ -73,6 +73,12 @@ class CampaignBot(commands.Bot):
         await apify_service.init_tables()
         print("[BOT] Apify database tables initialized")
 
+        # Proactively start fetching proxies in the background
+        from anti_detection.proxy_rotator import ProxyRotator
+        rotator = ProxyRotator()
+        await rotator.initialize()  # This now runs in background
+        print("[BOT] Background proxy fetch triggered")
+
         # Override tree error handler to suppress noisy "Ignoring exception" logs
         self.tree.on_error = self._tree_error_handler
 
