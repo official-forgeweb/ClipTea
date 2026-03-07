@@ -52,7 +52,7 @@ class VerifyView(discord.ui.View):
         self.code = code
         self.db = db
         self.proxy_rotator = proxy_rotator
-        self.verifier = IGBioVerifier(proxy_rotator=self.proxy_rotator, timeout=20.0)
+        self.verifier = IGBioVerifier(proxy_rotator=self.proxy_rotator, timeout=45.0)
 
     # ── Verify Now ─────────────────────────────────
     @discord.ui.button(
@@ -91,7 +91,9 @@ class VerifyView(discord.ui.View):
             return
 
         # Scrape the Instagram bio
+        log.info("[VerifyView] Starting bio check for @%s with code %s", self.username, self.code)
         found = await self.verifier.check_bio(self.username, self.code)
+        log.info("[VerifyView] Bio check result for @%s: %s", self.username, found)
 
         if found:
             # Link the account and mark verified

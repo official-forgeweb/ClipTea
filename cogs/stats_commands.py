@@ -54,26 +54,21 @@ class StatsCommands(commands.Cog):
         user_campaigns = await self.db.get_user_campaigns(target_id)
 
         embed = discord.Embed(
-            title="📊 CLIPPING STATS",
-            color=discord.Color.purple()
+            title="📊 CLIPPER PERFORMANCE PROFILE",
+            description=f"Reviewing performance for **{target_user.display_name}**",
+            color=discord.Color.from_rgb(88, 101, 242) # Discord blurple
         )
 
-        embed.add_field(name="👤 Discord", value=f"{target_user}", inline=True)
-        if target_user.joined_at:
-            embed.add_field(
-                name="📅 Joined Server",
-                value=f"{target_user.joined_at.strftime('%b %d, %Y')}",
-                inline=True
-            )
-        if first_sub:
-            embed.add_field(
-                name="🎬 Started Clipping",
-                value=f"{format_date(first_sub)} ({days_ago(first_sub)})",
-                inline=True
-            )
+        embed.set_thumbnail(url=target_user.display_avatar.url)
+
+        # Basic Info
+        started_text = f"{format_date(first_sub)} ({days_ago(first_sub)})" if first_sub else "Not started yet"
+        embed.add_field(name="👤 Clipper", value=f"**{target_user.mention}**", inline=True)
+        embed.add_field(name="📅 Joined", value=started_text, inline=True)
+        embed.add_field(name="🏅 Status", value=self._get_performance_rank(all_stats.get('total_views', 0)), inline=True)
 
         # Linked accounts
-        embed.add_field(name="═══ 🔗 LINKED ACCOUNTS ═══", value="\u200b", inline=False)
+        embed.add_field(name="🔗 LINKED ACCOUNTS", value="\u200b", inline=False)
         all_platforms = {"instagram": None, "tiktok": None, "twitter": None}
         for acc in accounts:
             all_platforms[acc['platform']] = acc
@@ -84,13 +79,13 @@ class StatsCommands(commands.Cog):
                 status = "✅" if acc.get('verified') else "⏳"
                 embed.add_field(
                     name=f"{emoji} {plat.title()}",
-                    value=f"@{acc['platform_username']} {status}",
+                    value=f"[`@{acc['platform_username']}`](https://{plat}.com/{acc['platform_username']}) {status}",
                     inline=True
                 )
             else:
                 embed.add_field(
                     name=f"{emoji} {plat.title()}",
-                    value="Not linked",
+                    value="*Not linked*",
                     inline=True
                 )
 
@@ -100,8 +95,8 @@ class StatsCommands(commands.Cog):
         total_likes = all_stats.get('total_likes', 0)
         total_comments = all_stats.get('total_comments', 0)
         
-        avg_views = total_views // total_videos if total_videos > 0 else 0
-        avg_likes = total_likes // total_videos if total_videos > 0 else 0
+        avg_views = total_views / total_videos if total_videos > 0 else 0
+        engagement_rate = (total_likes / total_views * 100) if total_views > 0 else 0
 
         # Calculate total earnings across all campaigns
         total_earned = 0
@@ -110,52 +105,48 @@ class StatsCommands(commands.Cog):
             rate = c.get('rate_per_10k_views', 10.0)
             total_earned += calculate_earnings(c_stats.get('total_views', 0), rate)
 
-        embed.add_field(name="═══ 📈 ALL-TIME STATISTICS ═══", value="\u200b", inline=False)
-        embed.add_field(name="🎬 Total Videos", value=format_number(total_videos), inline=True)
-        embed.add_field(name="👁️ Total Views", value=format_number(total_views), inline=True)
-        embed.add_field(name="💰 Total Earned", value=format_currency(total_earned), inline=True)
+        embed.add_field(name="📈 GLOBAL STATISTICS", value="\u200b", inline=False)
+        embed.add_field(name="🎬 Content", value=f"**{format_number(total_videos)}** videos", inline=True)
+        embed.add_field(name="👁️ reach", value=f"**{format_compact(total_views)}** views", inline=True)
+        embed.add_field(name="💰 Revenue", value=f"**{format_currency(total_earned)}**", inline=True)
         
-        embed.add_field(name="❤️ Total Likes", value=format_number(total_likes), inline=True)
-        embed.add_field(name="💬 Total Comments", value=format_number(total_comments), inline=True)
-        embed.add_field(name="📊 Avg. Views/Video", value=format_compact(avg_views), inline=True)
+        embed.add_field(name="❤️ Engagement", value=f"**{engagement_rate:.1f}%** rate", inline=True)
+        embed.add_field(name="📊 Average", value=f"**{format_compact(avg_views)}** /vid", inline=True)
+        embed.add_field(name="💬 Feedback", value=f"**{format_number(total_comments)}** comments", inline=True)
 
         # Campaign history
         if user_campaigns:
-            embed.add_field(name="═══ 📋 CAMPAIGN HISTORY ═══", value="\u200b", inline=False)
+            embed.add_field(name="📋 CAMPAIGN ACTIVITY (Recent)", value="\u200b", inline=False)
 
-            for c in user_campaigns[:5]:
+            for c in user_campaigns[:3]: # Show top 3 most recent
                 c_stats = await self.db.get_user_campaign_stats(c['id'], target_id)
                 rate = c.get('rate_per_10k_views', 10.0)
                 earned = calculate_earnings(c_stats.get('total_views', 0), rate)
-
                 status = status_emoji(c.get('status', 'active'))
 
                 embed.add_field(
-                    name=f"{status} {c['name']} ({c.get('status', 'active').title()})",
+                    name=f"{status} {c['name']}",
                     value=(
-                        f"📹 {c_stats.get('total_videos', 0)} videos │ "
-                        f"👁️ {format_compact(c_stats.get('total_views', 0))} views │ "
-                        f"💵 {format_currency(earned)}\n"
-                        f"Joined: {format_date(c.get('member_joined_at', ''))}"
+                        f"📹 {c_stats.get('total_videos', 0)} vids │ 👁️ {format_compact(c_stats.get('total_views', 0))} │ 💵 **{format_currency(earned)}**\n"
                     ),
                     inline=False
                 )
 
-        # Achievements
-        achievements = []
-        if total_videos >= 1: achievements.append("🌟 First Clip Submitted")
-        if total_videos >= 10: achievements.append("🔥 10+ Videos Submitted")
-        if total_videos >= 50: achievements.append("⚡ 50+ Videos Submitted")
-        if total_views >= 1_000_000: achievements.append("👑 1M+ Total Views")
-        if total_views >= 5_000_000: achievements.append("💎 5M+ Total Views")
-        if total_views >= 10_000_000: achievements.append("🏆 10M+ Total Views")
-        if total_earned >= 100: achievements.append("💵 $100+ Earned")
-        if total_earned >= 500: achievements.append("💰 $500+ Earned")
+        # Achievements (as medals)
+        ach_emojis = []
+        if total_videos >= 1: ach_emojis.append("🥉")
+        if total_videos >= 10: ach_emojis.append("🥈")
+        if total_videos >= 50: ach_emojis.append("🥇")
+        if total_views >= 1_000_000: ach_emojis.append("🔥")
+        if total_views >= 5_000_000: ach_emojis.append("⚡")
+        if total_views >= 10_000_000: ach_emojis.append("👑")
+        if total_earned >= 100: ach_emojis.append("💵")
+        if total_earned >= 500: ach_emojis.append("💰")
 
-        if achievements:
+        if ach_emojis:
             embed.add_field(
-                name="═══ 🏆 ACHIEVEMENTS ═══",
-                value="\n".join(achievements),
+                name="📅 MILESTONES",
+                value=" ".join(ach_emojis),
                 inline=False
             )
     
@@ -163,6 +154,14 @@ class StatsCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
         except:
             pass
+
+    def _get_performance_rank(self, views: int) -> str:
+        if views >= 10_000_000: return "💎 Diamond"
+        if views >= 5_000_000: return "👑 Platinum"
+        if views >= 1_000_000: return "🌟 Gold"
+        if views >= 100_000: return "🔥 Silver"
+        if views >= 10_000: return "⚡ Bronze"
+        return "🌱 Novice"
 
     # ── LEADERBOARD ────────────────────────────────────
     @app_commands.command(name="leaderboard", description="View the campaign leaderboard")

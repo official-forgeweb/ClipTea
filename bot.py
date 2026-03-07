@@ -118,8 +118,22 @@ class CampaignBot(commands.Bot):
 
         # Sync slash commands
         try:
-            synced = await self.tree.sync()
-            print(f"✅ Synced {len(synced)} slash commands")
+            if ALLOWED_GUILD_IDS:
+                # First: copy commands to each guild and sync them
+                for guild_id in ALLOWED_GUILD_IDS:
+                    guild = discord.Object(id=int(guild_id))
+                    self.tree.copy_global_to(guild=guild)
+                    synced = await self.tree.sync(guild=guild)
+                    print(f"  ✅ Synced {len(synced)} commands to guild {guild_id}")
+
+                # Then: clear global commands so they don't appear as duplicates
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync()  # Push the empty global list
+                print(f"✅ Synced commands to {len(ALLOWED_GUILD_IDS)} guild(s), cleared global duplicates")
+            else:
+                # No guild lock — sync globally
+                synced = await self.tree.sync()
+                print(f"✅ Synced {len(synced)} global slash commands")
         except Exception as e:
             print(f"❌ Command sync error: {e}")
 

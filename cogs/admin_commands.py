@@ -608,5 +608,111 @@ class AdminCommands(commands.Cog):
         except Exception:
             return []
 
+    # ── USER INFO (Admin) ─────────────────────────────
+    @app_commands.command(name="user_info", description="View a user's payment info, linked accounts, and campaigns")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(user="The Discord user to look up")
+    @admin_only()
+    async def user_info(self, interaction: discord.Interaction, user: discord.User):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+
+        try:
+            uid = str(user.id)
+
+            # 1. Payment info
+            payment = await self.db.get_user_payment(uid)
+
+            # 2. Linked accounts
+            accounts = await self.db.get_user_accounts(uid)
+
+            # 3. Campaign memberships
+            campaigns = await self.db.get_user_campaigns(uid)
+
+            embed = discord.Embed(
+                title=f"👤 User Info: {user}",
+                description=f"**Discord ID:** `{uid}`",
+                color=discord.Color.blue()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url if user.display_avatar else "")
+
+            # Payment section
+            if payment:
+                embed.add_field(
+                    name="💳 Payment Info",
+                    value=(
+                        f"**Type:** {payment.get('crypto_type', 'N/A')}\n"
+                        f"**Address:** `{payment.get('crypto_address', 'N/A')}`\n"
+                        f"**Updated:** {payment.get('updated_at', 'N/A')}"
+                    ),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="💳 Payment Info",
+                    value="❌ No payment info set",
+                    inline=False
+                )
+
+            # Linked accounts section
+            if accounts:
+                acc_lines = []
+                for acc in accounts:
+                    emoji = {"instagram": "📷", "tiktok": "🎵", "twitter": "🐦"}.get(acc['platform'], "🌐")
+                    verified = "✅" if acc.get('verified') else "⏳"
+                    acc_lines.append(f"{emoji} @{acc['platform_username']} {verified}")
+                embed.add_field(
+                    name=f"🔗 Linked Accounts ({len(accounts)})",
+                    value="\n".join(acc_lines),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="🔗 Linked Accounts",
+                    value="❌ No accounts linked",
+                    inline=False
+                )
+
+            # Campaigns section
+            if campaigns:
+                camp_lines = []
+                from campaign.payment_calculator import calculate_earnings
+                for c in campaigns[:10]:
+                    status_icon = {"active": "🟢", "left": "🔴", "paused": "🟡"}.get(
+                        c.get('member_status', 'active'), "⚪"
+                    )
+                    stats = await self.db.get_user_campaign_stats(c['id'], uid)
+                    rate = c.get('rate_per_10k_views', 10.0)
+                    earned = calculate_earnings(stats.get('total_views', 0), rate)
+                    camp_lines.append(
+                        f"{status_icon} **{c['name']}** (`{c['id']}`)\n"
+                        f"   Views: {format_number(stats.get('total_views', 0))} │ "
+                        f"Earned: {format_currency(earned)}"
+                    )
+                embed.add_field(
+                    name=f"📋 Campaigns ({len(campaigns)})",
+                    value="\n".join(camp_lines),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="📋 Campaigns",
+                    value="❌ Not in any campaigns",
+                    inline=False
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except discord.errors.NotFound:
+            pass
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+            except:
+                pass
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))
+

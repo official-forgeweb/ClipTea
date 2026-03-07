@@ -316,6 +316,17 @@ class DatabaseManager:
     async def join_campaign(self, campaign_id: str, discord_user_id: str) -> bool:
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                # First, check if user previously left this campaign
+                cursor = await db.execute(
+                    "UPDATE campaign_members SET status = 'active', joined_at = CURRENT_TIMESTAMP "
+                    "WHERE campaign_id = ? AND discord_user_id = ? AND status = 'left'",
+                    (campaign_id, discord_user_id)
+                )
+                if cursor.rowcount > 0:
+                    await db.commit()
+                    return True
+
+                # No previous membership — insert a new row
                 await db.execute(
                     "INSERT INTO campaign_members (campaign_id, discord_user_id) VALUES (?, ?)",
                     (campaign_id, discord_user_id)

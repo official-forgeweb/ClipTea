@@ -78,18 +78,35 @@ class ProxyRotator:
             self._fetching = False
 
     async def _fetch_free_proxies(self) -> List[str]:
-        """Download proxy lists from free public sources."""
+        """Download proxy lists from free public sources and local files."""
         proxies = set()
         
-        # Load local proxies if available
-        if os.path.exists(PROXY_FILE):
-            try:
-                with open(PROXY_FILE, 'r') as f:
-                    local_proxies = [line.strip() for line in f if line.strip()]
-                    proxies.update(local_proxies)
-                    print(f"[PROXY] Loaded {len(local_proxies)} proxies from {PROXY_FILE}")
-            except Exception as e:
-                print(f"[PROXY] Error reading {PROXY_FILE}: {e}")
+        # Local files to check
+        local_files = ["proxies.txt", "Webshare 10 proxies.txt"]
+        
+        for p_file in local_files:
+            if os.path.exists(p_file):
+                try:
+                    with open(p_file, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            
+                            # Handle ip:port:user:pass format (Webshare)
+                            parts = line.split(":")
+                            if len(parts) == 4:
+                                ip, port, user, pw = parts
+                                proxies.add(f"http://{user}:{pw}@{ip}:{port}")
+                            else:
+                                if not line.startswith("http"):
+                                    proxies.add(f"http://{line}")
+                                else:
+                                    proxies.add(line)
+                                    
+                    print(f"[PROXY] Loaded proxies from {p_file}")
+                except Exception as e:
+                    print(f"[PROXY] Error reading {p_file}: {e}")
 
         # Fetch from remote sources
         async with aiohttp.ClientSession() as session:
@@ -99,7 +116,11 @@ class ProxyRotator:
                         if response.status == 200:
                             text = await response.text()
                             fetched = [p.strip() for p in text.splitlines() if p.strip()]
-                            proxies.update(fetched)
+                            for p in fetched:
+                                if not p.startswith("http"):
+                                    proxies.add(f"http://{p}")
+                                else:
+                                    proxies.add(p)
                 except Exception as e:
                     print(f"[PROXY] Failed to fetch from {url}: {e}")
         
