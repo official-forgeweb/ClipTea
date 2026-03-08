@@ -6,7 +6,8 @@ from database.manager import DatabaseManager
 from campaign.payment_calculator import calculate_earnings
 from utils.formatters import (
     format_number, format_compact, format_currency, format_timestamp,
-    format_date, days_ago, platform_emoji, status_emoji, medal_emoji
+    format_date, days_ago, platform_emoji, status_emoji, medal_emoji,
+    build_campaign_embed
 )
 from utils.permissions import is_admin
 
@@ -287,7 +288,6 @@ class StatsCommands(commands.Cog):
         total_views = stats.get('grand_total_views', 0)
         total_earned = calculate_earnings(total_views, rate)
 
-        from utils.formatters import build_campaign_embed
         embed = build_campaign_embed(campaign, stats)
         embed.title = f"📊 Campaign Statistics: {campaign['name']}"
 

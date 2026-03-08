@@ -10,7 +10,10 @@ from campaign.payment_calculator import calculate_earnings
 from utils.formatters import (
     format_number, format_currency, format_timestamp, format_date, platform_emoji
 )
-from utils.validators import detect_platform, is_valid_video_url, extract_video_id, normalize_url
+from utils.platform_detector import (
+    detect_platform, is_valid_video_url, extract_video_id, 
+    normalize_url, get_platform_color
+)
 from utils.permissions import is_admin
 
 
@@ -67,8 +70,8 @@ class SubmissionCommands(commands.Cog):
     async def _ensure_initialized(self):
         if not self._initialized:
             await self.campaign_mgr.initialize()
-            from services.apify_instagram import ApifyInstagramService
-            self.apify_service = ApifyInstagramService(self.db)
+            from services.unified_scraper import UnifiedScraper
+            self.scraper = UnifiedScraper(self.db)
             self._initialized = True
 
     # ── SUBMIT VIDEO ───────────────────────────────────
@@ -178,10 +181,7 @@ class SubmissionCommands(commands.Cog):
 
             # Scrape
             try:
-                if platform == "instagram":
-                    video_data = await self.apify_service.get_video_metrics(norm_url)
-                else:
-                    video_data = await self.campaign_mgr.scrape_video(norm_url, platform)
+                video_data = await self.scraper.get_video_metrics(norm_url, platform=platform)
             except Exception as e:
                 results.append(f"❌ `{url[:30]}...` — Scrape failed ({str(e)[:50]})")
                 continue
@@ -226,6 +226,7 @@ class SubmissionCommands(commands.Cog):
                     likes=video_data.get('likes', 0),
                     comments=video_data.get('comments', 0),
                     shares=video_data.get('shares', 0),
+                    extra_data=str(video_data.get('bookmarks', '')) if platform == 'twitter' else video_data.get('title', '')
                 )
                 results.append(f"✅ `{url[:30]}...` — Submitted{dup_notice}")
             else:
@@ -350,8 +351,20 @@ class SubmissionCommands(commands.Cog):
                     # Time remaining
                     exp = v.get('tracking_expires_at')
                     if exp:
-                        val = check_video_validity(exp)
-                        rem = val.get('remaining', '0h 0m')
+                        try:
+                            from datetime import timezone as tz
+                            exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=tz.utc)
+                            remaining = exp_dt - datetime.now(tz.utc)
+                            if remaining.total_seconds() > 0:
+                                hours = int(remaining.total_seconds() // 3600)
+                                minutes = int((remaining.total_seconds() % 3600) // 60)
+                                rem = f"{hours}h {minutes}m"
+                            else:
+                                rem = "0h 0m"
+                        except Exception:
+                            rem = "N/A"
                         status_text = f"🟢 **TRACKING** — {rem} remaining"
                     else:
                         status_text = "🟢 **TRACKING**"
@@ -437,6 +450,7 @@ class SubmissionCommands(commands.Cog):
         campaign = await self.db.get_campaign(video['campaign_id'])
         rate = campaign.get('rate_per_10k_views', 10.0) if campaign else 10.0
 
+        latest = {}  # Initialize so it's always defined
         if video['is_final']:
             views = video['final_views']
             likes = video['final_likes']
@@ -453,7 +467,12 @@ class SubmissionCommands(commands.Cog):
 
         earned = calculate_earnings(views, rate)
 
-        embed = discord.Embed(title="📹 VIDEO DETAILS", color=discord.Color.purple())
+        embed = discord.Embed(title="📹 VIDEO DETAILS", color=get_platform_color(video.get('platform', 'instagram')))
+        
+        # Add title if YouTube
+        if video.get('platform') == 'youtube' and video.get('caption'):
+            embed.description = f"**{video.get('caption')}**"
+            
         embed.add_field(name="🔗 URL", value=video_url, inline=False)
         embed.add_field(name="📊 Campaign", value=video.get('campaign_name', video['campaign_id']), inline=True)
         embed.add_field(name="📅 Status", value=status_text, inline=True)
@@ -463,6 +482,18 @@ class SubmissionCommands(commands.Cog):
         embed.add_field(name="👁️ Views", value=format_number(views), inline=True)
         embed.add_field(name="❤️ Likes", value=format_number(likes), inline=True)
         embed.add_field(name="💬 Comments", value=format_number(comments), inline=True)
+        
+        # Add platform specific stats
+        shares = latest.get('shares', 0) if latest else 0
+        if video.get('platform') == 'twitter':
+            embed.add_field(name="🔁 Retweets/Quotes", value=format_number(shares), inline=True)
+            # extra_data holds bookmarks if available
+            bookmarks = latest.get('extra_data', '0') if latest else '0'
+            if bookmarks and bookmarks.isdigit():
+                embed.add_field(name="🔖 Bookmarks", value=format_number(int(bookmarks)), inline=True)
+        elif video.get('platform') == 'tiktok':
+            embed.add_field(name="🔁 Shares", value=format_number(shares), inline=True)
+            
         embed.add_field(name="💰 Earnings", value=format_currency(earned), inline=True)
 
         # Growth history (if not final yet or just for record)

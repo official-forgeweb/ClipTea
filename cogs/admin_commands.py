@@ -46,7 +46,7 @@ class AdminCommands(commands.Cog):
         max_views_cap: int = None,
         rate_per_10k_views: float = None,
         platforms: app_commands.Choice[str] = None,
-        auto_stop: bool = True
+        auto_stop: bool = None
     ):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -60,6 +60,11 @@ class AdminCommands(commands.Cog):
                 rate_per_10k_views = float(default_rate) if default_rate else 10.00
             except ValueError:
                 rate_per_10k_views = 10.00
+
+        # Get default auto-stop from settings if not specified
+        if auto_stop is None:
+            default_auto_stop = await self.db.get_setting("default_auto_stop")
+            auto_stop = False if default_auto_stop == "false" else True
 
         platform_value = platforms.value if platforms else "all"
         campaign_id = generate_campaign_id()
@@ -470,9 +475,11 @@ class AdminCommands(commands.Cog):
                     up.crypto_address
                 FROM submitted_videos sv
                 LEFT JOIN (
-                    SELECT video_id, views, MAX(id)
-                    FROM metric_snapshots
-                    GROUP BY video_id
+                    SELECT video_id, views
+                    FROM metric_snapshots m1
+                    WHERE m1.id = (
+                        SELECT MAX(m2.id) FROM metric_snapshots m2 WHERE m2.video_id = m1.video_id
+                    )
                 ) latest ON sv.id = latest.video_id
                 LEFT JOIN user_payments up ON sv.discord_user_id = up.discord_user_id
                 WHERE sv.campaign_id = ? AND sv.status != 'deleted'

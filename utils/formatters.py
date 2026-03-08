@@ -77,6 +77,7 @@ def platform_emoji(platform: str) -> str:
         "instagram": "📷",
         "tiktok": "🎵",
         "twitter": "🐦",
+        "youtube": "▶️"
     }.get(platform.lower(), "🌐")
 
 

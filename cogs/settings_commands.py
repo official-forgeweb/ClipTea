@@ -68,6 +68,9 @@ class SettingsCommands(commands.Cog):
         daily_time = settings.get('daily_summary_time', '09:00')
         embed.add_field(name="📅 Daily Summary", value=f"{'✅ Enabled' if daily == 'true' else '❌ Disabled'} at {daily_time}", inline=True)
 
+        auto_stop = settings.get('default_auto_stop', 'true')
+        embed.add_field(name="🛑 Global Auto-Stop", value="✅ Enabled" if auto_stop == 'true' else "❌ Disabled", inline=True)
+
         try:
             await interaction.followup.send(embed=embed)
         except Exception:
@@ -81,7 +84,8 @@ class SettingsCommands(commands.Cog):
         default_min_views="Default minimum views to join",
         default_max_views="Default max views cap (0 for unlimited)",
         scrape_interval_minutes="Minutes between automatic scrapes",
-        admin_role="Discord role that has admin access"
+        admin_role="Discord role that has admin access",
+        auto_stop="Toggle whether new campaigns stop automatically by default"
     )
     @admin_only()
     async def settings_update(
@@ -94,6 +98,7 @@ class SettingsCommands(commands.Cog):
         default_max_views: int = None,
         scrape_interval_minutes: int = None,
         admin_role: discord.Role = None,
+        auto_stop: bool = None,
     ):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -131,6 +136,10 @@ class SettingsCommands(commands.Cog):
         if admin_role is not None:
             await self.db.set_setting("admin_role_id", str(admin_role.id))
             updated.append(f"🛡️ Admin Role: {admin_role.mention}")
+
+        if auto_stop is not None:
+            await self.db.set_setting("default_auto_stop", "true" if auto_stop else "false")
+            updated.append(f"🛑 Auto-Stop: {'✅ Enabled' if auto_stop else '❌ Disabled'}")
 
         if not updated:
             try:

@@ -1,6 +1,6 @@
 """Campaign auto-stop monitoring background task."""
 import discord
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from discord.ext import commands, tasks
 from database.manager import DatabaseManager
 from campaign.payment_calculator import (
@@ -25,10 +25,15 @@ class CampaignMonitor(commands.Cog):
     async def monitor_campaigns(self):
         """Check all active campaigns for auto-stop conditions every 5 minutes."""
         try:
+            # Check global auto-stop setting
+            global_auto_stop = await self.db.get_setting("default_auto_stop")
+            if global_auto_stop == "false":
+                return
+
             active_campaigns = await self.db.get_active_campaigns()
 
             for campaign in active_campaigns:
-                if not campaign.get('auto_stop', True):
+                if not bool(campaign.get('auto_stop', True)):
                     continue
 
                 campaign_id = campaign['id']
@@ -59,8 +64,10 @@ class CampaignMonitor(commands.Cog):
                     try:
                         created_str = campaign.get('created_at', '')
                         created_at = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
                         end_date = created_at + timedelta(days=campaign['duration_days'])
-                        if datetime.now() >= end_date.replace(tzinfo=None):
+                        if datetime.now(timezone.utc) >= end_date:
                             should_stop = True
                             reason = f"⏱️ Duration expired ({campaign['duration_days']} days)"
                     except (ValueError, AttributeError):

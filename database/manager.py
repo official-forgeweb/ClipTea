@@ -261,50 +261,50 @@ class DatabaseManager:
     # INSTAGRAM VERIFICATION CODES
     # ═══════════════════════════════════════════════
 
-    async def save_verification_code(self, discord_user_id: str, platform_username: str,
+    async def save_verification_code(self, discord_user_id: str, platform: str, platform_username: str,
                                      code: str, ttl_minutes: int = 10) -> bool:
-        """Save a pending verification code for an Instagram account (10-minute TTL)."""
+        """Save a pending verification code for an account (10-minute TTL)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """INSERT INTO ig_verification_codes
                        (discord_user_id, platform, platform_username, code, expires_at, verified)
-                   VALUES (?, 'instagram', ?, ?, datetime('now', '+' || ? || ' minutes'), 0)
-                   ON CONFLICT(discord_user_id, platform_username)
+                   VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' minutes'), 0)
+                   ON CONFLICT(discord_user_id, platform, platform_username)
                    DO UPDATE SET code = ?, expires_at = datetime('now', '+' || ? || ' minutes'),
                                  verified = 0, created_at = CURRENT_TIMESTAMP""",
-                (discord_user_id, platform_username, code, ttl_minutes,
+                (discord_user_id, platform, platform_username, code, ttl_minutes,
                  code, ttl_minutes)
             )
             await db.commit()
             return True
 
-    async def get_pending_verification(self, discord_user_id: str,
+    async def get_pending_verification(self, discord_user_id: str, platform: str,
                                        platform_username: str) -> Optional[Dict[str, Any]]:
-        """Return the active (non-expired, unverified) code for a user+username pair."""
+        """Return the active (non-expired, unverified) code for a user+platform+username pair."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """SELECT * FROM ig_verification_codes
-                   WHERE discord_user_id = ? AND platform_username = ?
+                   WHERE discord_user_id = ? AND platform = ? AND platform_username = ?
                          AND verified = 0 AND expires_at > CURRENT_TIMESTAMP""",
-                (discord_user_id, platform_username)
+                (discord_user_id, platform, platform_username)
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def mark_verified_by_code(self, discord_user_id: str,
+    async def mark_verified_by_code(self, discord_user_id: str, platform: str,
                                     platform_username: str) -> bool:
         """Mark a verification code as used and verify the linked account."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """UPDATE ig_verification_codes SET verified = 1
-                   WHERE discord_user_id = ? AND platform_username = ?""",
-                (discord_user_id, platform_username)
+                   WHERE discord_user_id = ? AND platform = ? AND platform_username = ?""",
+                (discord_user_id, platform, platform_username)
             )
             await db.execute(
                 """UPDATE user_accounts SET verified = 1
-                   WHERE discord_user_id = ? AND platform = 'instagram' AND platform_username = ?""",
-                (discord_user_id, platform_username)
+                   WHERE discord_user_id = ? AND platform = ? AND platform_username = ?""",
+                (discord_user_id, platform, platform_username)
             )
             await db.commit()
             return True
@@ -467,7 +467,7 @@ class DatabaseManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                """SELECT sv.* FROM submitted_videos sv
+                 """SELECT sv.*, c.name as campaign_name FROM submitted_videos sv
                    JOIN campaigns c ON sv.campaign_id = c.id
                    WHERE sv.status = 'tracking' AND c.status = 'active' AND sv.is_final = 0
                    ORDER BY sv.submitted_at"""
@@ -520,12 +520,12 @@ class DatabaseManager:
 
     async def save_metric_snapshot(self, video_id: int, views: int = 0,
                                    likes: int = 0, comments: int = 0,
-                                   shares: int = 0) -> int:
+                                   shares: int = 0, extra_data: str = "") -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """INSERT INTO metric_snapshots (video_id, views, likes, comments, shares)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (video_id, views, likes, comments, shares)
+                """INSERT INTO metric_snapshots (video_id, views, likes, comments, shares, extra_data)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (video_id, views, likes, comments, shares, extra_data)
             )
             await db.commit()
             return cursor.lastrowid

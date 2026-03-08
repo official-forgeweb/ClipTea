@@ -23,7 +23,8 @@ INSERT OR IGNORE INTO bot_settings (key, value) VALUES
     ('admin_role_id', ''),
     ('notification_channel_id', ''),
     ('daily_summary_enabled', 'false'),
-    ('daily_summary_time', '09:00');
+    ('daily_summary_time', '09:00'),
+    ('default_auto_stop', 'true');
 """
 
 CAMPAIGNS_TABLE = """
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS ig_verification_codes (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP NOT NULL,
     verified BOOLEAN DEFAULT 0,
-    UNIQUE(discord_user_id, platform_username)
+    UNIQUE(discord_user_id, platform, platform_username)
 );
 """
 
@@ -198,6 +199,7 @@ async def init_database(db_path: str):
         await db.execute(USER_PAYMENTS_TABLE)
         await db.execute(METRIC_SNAPSHOTS_TABLE)
         await db.execute(NOTIFICATIONS_TABLE)
+        await _migrate_verification_codes(db)
         await db.execute(IG_VERIFICATION_CODES_TABLE)
         await db.execute(APIFY_CACHE_TABLE)
         await db.execute(API_USAGE_TABLE)
@@ -263,4 +265,48 @@ async def _migrate_submitted_videos(db):
                     await db.execute(f"ALTER TABLE submitted_videos ADD COLUMN {col_name} {col_type}")
         except Exception as e:
             print(f"Migration error for {col_name}: {e}")
+
+    # Also ensure extra_data column exists on metric_snapshots
+    try:
+        async with db.execute("PRAGMA table_info(metric_snapshots)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if 'extra_data' not in columns:
+                await db.execute("ALTER TABLE metric_snapshots ADD COLUMN extra_data TEXT DEFAULT ''")
+    except Exception as e:
+        print(f"Migration error for metric_snapshots.extra_data: {e}")
+
     await db.commit()
+
+async def _migrate_verification_codes(db):
+    """Migrate ig_verification_codes UNIQUE constraint to include platform."""
+    async with db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='ig_verification_codes'"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return
+    existing_sql = row[0] or ""
+    if "UNIQUE(discord_user_id, platform, platform_username)" in existing_sql:
+        return
+        
+    await db.executescript("""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE ig_verification_codes RENAME TO ig_verification_codes_old;
+        CREATE TABLE IF NOT EXISTS ig_verification_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_user_id TEXT NOT NULL,
+            platform TEXT NOT NULL DEFAULT 'instagram',
+            platform_username TEXT NOT NULL,
+            code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            verified BOOLEAN DEFAULT 0,
+            UNIQUE(discord_user_id, platform, platform_username)
+        );
+        INSERT OR IGNORE INTO ig_verification_codes
+            (id, discord_user_id, platform, platform_username, code, created_at, expires_at, verified)
+        SELECT id, discord_user_id, platform, platform_username, code, created_at, expires_at, verified
+        FROM ig_verification_codes_old;
+        DROP TABLE ig_verification_codes_old;
+        PRAGMA foreign_keys = ON;
+    """)

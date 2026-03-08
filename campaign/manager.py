@@ -93,6 +93,8 @@ class CampaignManager:
                     if datetime.now(timezone.utc) > exp_at:
                         # Finalize it
                         metrics = await self.db.get_latest_metrics(video_id)
+                        if not metrics:
+                            metrics = {}
                         await self.db.mark_video_final(
                             video_id,
                             metrics.get('views', 0),
@@ -158,6 +160,8 @@ class CampaignManager:
                     if datetime.now(timezone.utc) > exp_at:
                         # Finalize
                         metrics = await self.db.get_latest_metrics(video_id)
+                        if not metrics:
+                            metrics = {}
                         await self.db.mark_video_final(
                             video_id,
                             metrics.get('views', 0),

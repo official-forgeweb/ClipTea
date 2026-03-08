@@ -2,7 +2,7 @@
 import discord
 from discord.ext import commands, tasks
 from database.manager import DatabaseManager
-from campaign.manager import CampaignManager
+from services.unified_scraper import UnifiedScraper
 
 
 class PeriodicScraper(commands.Cog):
@@ -11,7 +11,7 @@ class PeriodicScraper(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = DatabaseManager()
-        self.campaign_mgr = CampaignManager(self.db)
+        self.scraper = UnifiedScraper(self.db)
         self._initialized = False
         self.periodic_scrape.start()
 
@@ -37,13 +37,12 @@ class PeriodicScraper(commands.Cog):
 
             # Skip the very first run on startup to avoid "testing" delay
             if not self._initialized:
-                await self.campaign_mgr.initialize()
                 self._initialized = True
                 print("[SCRAPER] Startup complete. First scheduled scrape will run later.")
                 return
 
             # Scrape all active tracking videos
-            summary = await self.campaign_mgr.scrape_all_tracking_videos()
+            summary = await self.scrape_all_tracking_videos()
 
             print(
                 f"[SCRAPER] Scrape cycle complete: "
@@ -107,6 +106,60 @@ class PeriodicScraper(commands.Cog):
                         await channel.send(embed=embed)
                 except Exception:
                     pass
+
+    async def scrape_all_tracking_videos(self) -> dict:
+        """Scrape metrics for all actively tracked videos across all active campaigns."""
+        import asyncio
+        from datetime import datetime, timezone
+        
+        videos = await self.db.get_all_tracking_videos()
+        summary = {"total_videos": len(videos), "successful": 0, "failed": 0, "errors": []}
+
+        for i, video in enumerate(videos):
+            video_url = video["video_url"]
+            platform = video["platform"]
+            video_id = video["id"]
+
+            # Check for 24h expiration
+            exp_at_str = video.get('tracking_expires_at')
+            if exp_at_str:
+                try:
+                    exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > exp_at:
+                        metrics = await self.db.get_latest_metrics(video_id)
+                        await self.db.mark_video_final(
+                            video_id,
+                            metrics.get('views', 0) if metrics else 0,
+                            metrics.get('likes', 0) if metrics else 0,
+                            metrics.get('comments', 0) if metrics else 0
+                        )
+                        continue
+                except Exception as e:
+                    pass
+
+            try:
+                metrics = await self.scraper.get_video_metrics(video_url, platform)
+                if metrics and not metrics.get("error"):
+                    await self.db.save_metric_snapshot(
+                        video_id=video_id,
+                        views=metrics.get("views", 0),
+                        likes=metrics.get("likes", 0),
+                        comments=metrics.get("comments", 0),
+                        shares=metrics.get("shares", 0),
+                        extra_data=str(metrics.get("bookmarks", "")) if platform == "twitter" else metrics.get("title", "")
+                    )
+                    summary["successful"] += 1
+                else:
+                    summary["failed"] += 1
+                    summary["errors"].append(metrics.get("error", f"No metrics returned for {video_url}"))
+            except Exception as e:
+                summary["failed"] += 1
+                summary["errors"].append(f"Error for {video_url}: {str(e)}")
+
+            # Small delay between videos to prevent aggressive scraping
+            await asyncio.sleep(1.5)
+
+        return summary
 
     @periodic_scrape.before_loop
     async def before_scrape(self):

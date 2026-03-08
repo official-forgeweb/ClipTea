@@ -20,7 +20,7 @@ from discord.ext import commands
 from database.manager import DatabaseManager
 from utils.formatters import platform_emoji
 from utils.validators import validate_username
-from utils.ig_bio_verifier import IGBioVerifier
+from utils.universal_bio_verifier import UniversalBioVerifier
 from campaign.manager import CampaignManager
 from anti_detection.proxy_rotator import ProxyRotator
 
@@ -44,15 +44,16 @@ def _generate_code(length: int = 6) -> str:
 class VerifyView(discord.ui.View):
     """Interactive view with Verify Now and Cancel buttons."""
 
-    def __init__(self, discord_user_id: str, username: str, code: str,
+    def __init__(self, discord_user_id: str, platform: str, username: str, code: str,
                  db: DatabaseManager, proxy_rotator: ProxyRotator, *, timeout: float = 600):
         super().__init__(timeout=timeout)
         self.discord_user_id = discord_user_id
+        self.platform = platform
         self.username = username
         self.code = code
         self.db = db
         self.proxy_rotator = proxy_rotator
-        self.verifier = IGBioVerifier(proxy_rotator=self.proxy_rotator, timeout=45.0)
+        self.verifier = UniversalBioVerifier(proxy_rotator=self.proxy_rotator)
 
     # ── Verify Now ─────────────────────────────────
     @discord.ui.button(
@@ -78,7 +79,7 @@ class VerifyView(discord.ui.View):
 
         # Check the code is still valid in DB
         pending = await self.db.get_pending_verification(
-            self.discord_user_id, self.username
+            self.discord_user_id, self.platform, self.username
         )
         if not pending:
             await interaction.followup.send(
@@ -90,26 +91,27 @@ class VerifyView(discord.ui.View):
             await interaction.message.edit(view=self)
             return
 
-        # Scrape the Instagram bio
-        log.info("[VerifyView] Starting bio check for @%s with code %s", self.username, self.code)
-        found = await self.verifier.check_bio(self.username, self.code)
-        log.info("[VerifyView] Bio check result for @%s: %s", self.username, found)
+        # Scrape the platform bio
+        log.info("[VerifyView] Starting bio check for %s @%s with code %s", self.platform, self.username, self.code)
+        found = await self.verifier.check_bio(self.platform, self.username, self.code)
+        log.info("[VerifyView] Bio check result for %s @%s: %s", self.platform, self.username, found)
 
         if found:
             # Link the account and mark verified
             await self.db.link_account(
                 discord_user_id=self.discord_user_id,
                 discord_username=str(interaction.user),
-                platform="instagram",
+                platform=self.platform,
                 platform_username=self.username,
             )
-            await self.db.mark_verified_by_code(self.discord_user_id, self.username)
+            await self.db.mark_verified_by_code(self.discord_user_id, self.platform, self.username)
 
+            emoji = platform_emoji(self.platform)
             embed = discord.Embed(
-                title="🎉 Instagram Account Verified!",
+                title=f"🎉 {self.platform.title()} Account Verified!",
                 description=(
-                    f"**@{self.username}** has been linked and verified ✅\n\n"
-                    "You can now remove the verification code from your bio."
+                    f"**@{self.username}** has been linked and verified {emoji}\n\n"
+                    "You can now remove the verification code from your profile."
                 ),
                 color=discord.Color.green()
             )
@@ -123,12 +125,15 @@ class VerifyView(discord.ui.View):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         else:
+            bio_terms = {"youtube": "Channel description (About section)", "twitter": "Bio", "tiktok": "Bio"}
+            bio_term_display = bio_terms.get(self.platform, "Bio")
+            
             embed = discord.Embed(
-                title="❌ Code Not Found in Bio",
+                title="❌ Code Not Found",
                 description=(
-                    f"The code **`{self.code}`** was **not found** in the bio of **@{self.username}**.\n\n"
+                    f"The code **`{self.code}`** was **not found** in the {bio_term_display.lower()} of **@{self.username}**.\n\n"
                     "Please make sure you've:\n"
-                    "1. Added the exact code to your Instagram bio\n"
+                    f"1. Added the exact code to your {self.platform.title()} {bio_term_display.lower()}\n"
                     "2. Saved your profile\n"
                     "3. Set your account to **Public** (private accounts can't be scraped)\n\n"
                     "Then click **Verify Now** again."
@@ -212,88 +217,106 @@ class AccountCommands(commands.Cog):
                 pass
             return
 
-        # ── Instagram: bio-verification flow ───────
-        if platform.value == "instagram":
+        # ── Bio-verification flow for ALL platforms ───────
+        code = _generate_code()
+        await self.db.save_verification_code(
+            discord_user_id=str(interaction.user.id),
+            platform=platform.value,
+            platform_username=clean_username,
+            code=code,
+            ttl_minutes=10,
+        )
 
-            code = _generate_code()
-            await self.db.save_verification_code(
-                discord_user_id=str(interaction.user.id),
-                platform_username=clean_username,
-                code=code,
-                ttl_minutes=10,
-            )
+        # Ensure proxies are ready (mostly needed for Instagram but safe for all)
+        if not self.proxy_rotator._initialized:
+            await self.proxy_rotator.initialize()
 
-            # Ensure proxies are ready
-            if not self.proxy_rotator._initialized:
-                await self.proxy_rotator.initialize()
-
-            # Pre-link the account as unverified so it shows up in my_accounts
-            await self.db.link_account(
-                discord_user_id=str(interaction.user.id),
-                discord_username=str(interaction.user),
-                platform="instagram",
-                platform_username=clean_username,
-            )
-
-            embed = discord.Embed(
-                title="📷 Instagram Account Verification",
-                description=(
-                    f"To link **@{clean_username}**, add the code below to your **Instagram bio**.\n"
-                    "Once done, click **✅ Verify Now**."
-                ),
-                color=discord.Color.from_rgb(193, 53, 132)  # Instagram pink
-            )
-            embed.add_field(
-                name="🔑 Your Verification Code",
-                value=f"```{code}```",
-                inline=False
-            )
-            embed.add_field(
-                name="📋 Steps",
-                value=(
-                    "1. Open Instagram → Edit Profile\n"
-                    "2. Paste the code into your **Bio** field\n"
-                    "3. Save and come back\n"
-                    "4. Click **✅ Verify Now** below"
-                ),
-                inline=False
-            )
-            embed.set_footer(text="⏳ Code expires in 10 minutes • You can remove it after verification")
-
-            view = VerifyView(
-                discord_user_id=str(interaction.user.id),
-                username=clean_username,
-                code=code,
-                db=self.db,
-                proxy_rotator=self.proxy_rotator,
-            )
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            return
-
-        # ── TikTok / Twitter: instant link ─────────
-
+        # Pre-link the account as unverified so it shows up in my_accounts as pending
         await self.db.link_account(
             discord_user_id=str(interaction.user.id),
             discord_username=str(interaction.user),
             platform=platform.value,
-            platform_username=clean_username
+            platform_username=clean_username,
         )
-        # Auto-verify non-Instagram platforms (trust user input)
-        await self.db.verify_account(str(interaction.user.id), platform.value)
 
-        accounts = await self.db.get_user_accounts(str(interaction.user.id))
+        emoji = platform_emoji(platform.value)
+        
+        # Platform-specific theming
+        if platform.value == "instagram":
+            color = discord.Color.from_rgb(193, 53, 132)  # IG Pink
+            bio_location = "Bio"
+            steps = (
+                "1. Open Instagram → Edit Profile\n"
+                "2. Paste the code into your **Bio** field\n"
+                "3. Save and come back\n"
+                "4. Click **✅ Verify Now** below"
+            )
+        elif platform.value == "tiktok":
+            color = discord.Color.from_rgb(0, 242, 254)   # TikTok Cyan
+            bio_location = "Bio"
+            steps = (
+                "1. Open TikTok → Edit Profile\n"
+                "2. Paste the code into your **Bio** field\n"
+                "3. Save and come back\n"
+                "4. Click **✅ Verify Now** below"
+            )
+        elif platform.value == "twitter":
+            color = discord.Color.blue()
+            bio_location = "Bio"
+            steps = (
+                "1. Open Twitter/X → Edit profile\n"
+                "2. Paste the code into your **Bio** field\n"
+                "3. Save and come back\n"
+                "4. Click **✅ Verify Now** below"
+            )
+        elif platform.value == "youtube":
+            color = discord.Color.red()
+            bio_location = "Channel Description"
+            steps = (
+                "1. Open YouTube → YouTube Studio → Customization → Basic info\n"
+                "2. Paste the code into your **Description** box\n"
+                "3. Publish changes and come back\n"
+                "4. Click **✅ Verify Now** below"
+            )
+        else:
+            color = discord.Color.dark_gray()
+            bio_location = "Profile Description"
+            steps = (
+                "1. Open your profile settings\n"
+                "2. Paste the code into your description/bio\n"
+                "3. Save and come back\n"
+                "4. Click **✅ Verify Now** below"
+            )
 
         embed = discord.Embed(
-            title="✅ Account Linked",
-            color=discord.Color.green()
+            title=f"{emoji} {platform.name} Account Verification",
+            description=(
+                f"To link **@{clean_username}**, add the code below to your **{platform.title()} {bio_location}**.\n"
+                "Once done, click **✅ Verify Now**."
+            ),
+            color=color
         )
         embed.add_field(
-            name=f"{platform_emoji(platform.value)} {platform.name}",
-            value=f"@{clean_username} ✅",
+            name="🔑 Your Verification Code",
+            value=f"```{code}```",
             inline=False
         )
-        _add_accounts_fields(embed, accounts)
-        await interaction.followup.send(embed=embed)
+        embed.add_field(
+            name="📋 Steps",
+            value=steps,
+            inline=False
+        )
+        embed.set_footer(text="⏳ Code expires in 10 minutes • You can remove it after verification")
+
+        view = VerifyView(
+            discord_user_id=str(interaction.user.id),
+            platform=platform.value,
+            username=clean_username,
+            code=code,
+            db=self.db,
+            proxy_rotator=self.proxy_rotator,
+        )
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # ── /unlink_account ───────────────────────────
     @app_commands.command(name="unlink_account", description="Unlink a social media account")
