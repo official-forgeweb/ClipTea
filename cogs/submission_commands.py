@@ -155,14 +155,17 @@ class SubmissionCommands(commands.Cog):
                 results.append(f"❌ `{url[:30]}...` — Wrong platform (only {campaign_platforms})")
                 continue
 
-            # Check linked account
-            account = await self.db.get_user_account(user_id, platform)
-            if not account:
-                results.append(f"❌ `{url[:30]}...` — Link {platform.title()} first")
-                continue
-                
-            if not account.get('verified'):
-                results.append(f"❌ `{url[:30]}...` — Account @{account['platform_username']} is NOT verified")
+            # Check linked account(s) — user may have multiple accounts on the same platform
+            accounts = await self.db.get_user_accounts(user_id)
+            platform_accounts = [a for a in accounts if a['platform'] == platform and a.get('verified')]
+            
+            if not platform_accounts:
+                # Check if they have unverified accounts
+                unverified = [a for a in accounts if a['platform'] == platform and not a.get('verified')]
+                if unverified:
+                    results.append(f"❌ `{url[:30]}...` — Account @{unverified[0]['platform_username']} is NOT verified")
+                else:
+                    results.append(f"❌ `{url[:30]}...` — Link {platform.title()} first")
                 continue
 
             # Check duplicates (same campaign + url)
@@ -196,12 +199,22 @@ class SubmissionCommands(commands.Cog):
                 results.append(f"❌ `{url[:30]}...` — Posted >24h ago")
                 continue
 
-            # Verify ownership
+            # Verify ownership — check against ALL linked accounts for this platform
             author = video_data.get('author_username', '').lower().strip()
-            linked_username = account['platform_username'].lower().strip()
-            if author and author != linked_username:
-                results.append(f"❌ `{url[:30]}...` — Posted by @{author}, not you")
-                continue
+            linked_usernames = [a['platform_username'].lower().strip() for a in platform_accounts]
+            matched_account = None
+            if author:
+                for acc in platform_accounts:
+                    if acc['platform_username'].lower().strip() == author:
+                        matched_account = acc
+                        break
+                if not matched_account:
+                    results.append(f"❌ `{url[:30]}...` — Posted by @{author}, not your linked account(s)")
+                    continue
+            else:
+                matched_account = platform_accounts[0]  # fallback to first account if author unknown
+            
+            linked_username = matched_account['platform_username']
 
             # Save to database
             video_id_str = extract_video_id(norm_url, platform)
