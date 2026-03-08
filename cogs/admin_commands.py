@@ -470,7 +470,8 @@ class AdminCommands(commands.Cog):
                     sv.discord_user_id,
                     sv.platform,
                     sv.author_username,
-                    SUM(CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE IFNULL(latest.views, 0) END) as account_views,
+                    sv.video_url,
+                    CASE WHEN sv.is_final = 1 THEN sv.final_views ELSE IFNULL(latest.views, 0) END as video_views,
                     up.crypto_type,
                     up.crypto_address
                 FROM submitted_videos sv
@@ -483,8 +484,6 @@ class AdminCommands(commands.Cog):
                 ) latest ON sv.id = latest.video_id
                 LEFT JOIN user_payments up ON sv.discord_user_id = up.discord_user_id
                 WHERE sv.campaign_id = ? AND sv.status != 'deleted'
-                GROUP BY sv.discord_user_id, sv.platform, sv.author_username
-                ORDER BY sv.discord_user_id, account_views DESC
             """
             async with db.execute(query, (campaign_id,)) as cursor:
                 rows = [dict(row) for row in await cursor.fetchall()]
@@ -499,20 +498,38 @@ class AdminCommands(commands.Cog):
         
         for row in rows:
             uid = row['discord_user_id']
-            views = row['account_views']
-            total_campaign_views += views
+            views = row['video_views']
             
             if uid not in user_data:
+                member_name = f"User {uid}"
+                try:
+                    if interaction.guild:
+                        member = interaction.guild.get_member(int(uid))
+                        if member:
+                            member_name = member.name
+                        else:
+                            user = self.bot.get_user(int(uid))
+                            if user:
+                                member_name = user.name
+                except Exception:
+                    pass
+
                 user_data[uid] = {
-                    'accounts': [],
+                    'discord_name': member_name,
+                    'accounts': {},
+                    'videos': [],
                     'total_views': 0,
                     'crypto_type': row['crypto_type'] or "Not Set",
                     'crypto_address': row['crypto_address'] or "N/A"
                 }
-            
-            user_data[uid]['accounts'].append({
-                'platform': row['platform'],
-                'username': row['author_username'],
+
+            acc_key = f"{row['platform'].upper()}: @{row['author_username']}"
+            if acc_key not in user_data[uid]['accounts']:
+                user_data[uid]['accounts'][acc_key] = 0
+            user_data[uid]['accounts'][acc_key] += views
+
+            user_data[uid]['videos'].append({
+                'url': row['video_url'],
                 'views': views
             })
             user_data[uid]['total_views'] += views
@@ -535,7 +552,7 @@ class AdminCommands(commands.Cog):
         
         for uid, data in sorted_users[:15]: # Show top 15 in embed
             earned = calculate_earnings(data['total_views'], rate)
-            acc_list = ", ".join([f"@{a['username']} ({format_number(a['views'])})" for a in data['accounts']])
+            acc_list = ", ".join([f"{k} ({format_number(v)})" for k, v in data['accounts'].items()])
             
             summary_text += f"👤 <@{uid}>\n"
             summary_text += f"└ 🔗 {acc_list}\n"
@@ -568,26 +585,32 @@ class AdminCommands(commands.Cog):
                 
                 output = io.StringIO()
                 headers = [
-                    'Discord ID', 'Total Views', 'Earnings ($)', 
-                    'Crypto Type', 'Address', 'Account Breakdown'
+                    'Discord Name', 'Discord ID', 'Total Views', 'Earnings ($)', 
+                    'Crypto Type', 'Address', 'Account Breakdown', 'Uploaded Videos', 'Video Views'
                 ]
                 writer = csv.DictWriter(output, fieldnames=headers)
                 writer.writeheader()
                 
                 for uid_str, d in sorted(self.data.items(), key=lambda x: x[1]['total_views'], reverse=True):
-                    # Format accounts for CSV: "IG: @user (50k), TT: @user2 (20k)"
-                    breakdown = ", ".join([
-                        f"{a['platform'].upper()}: @{a['username']} ({a['views']})" 
-                        for a in d['accounts']
+                    # Format accounts for CSV: next line separator
+                    breakdown = "\n".join([
+                        f"{k} ({v})" 
+                        for k, v in d['accounts'].items()
                     ])
                     
+                    video_urls = "\n".join([v['url'] for v in d['videos']])
+                    video_views = "\n".join([str(v['views']) for v in d['videos']])
+                    
                     writer.writerow({
+                        'Discord Name': d['discord_name'],
                         'Discord ID': uid_str,
                         'Total Views': d['total_views'],
                         'Earnings ($)': f"{calculate_earnings(d['total_views'], self.rate):.2f}",
                         'Crypto Type': d['crypto_type'],
                         'Address': d['crypto_address'],
-                        'Account Breakdown': breakdown
+                        'Account Breakdown': breakdown,
+                        'Uploaded Videos': video_urls,
+                        'Video Views': video_views
                     })
                 
                 file_data = output.getvalue()
@@ -719,6 +742,49 @@ class AdminCommands(commands.Cog):
                 await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
             except:
                 pass
+
+
+    # ── FORCE UPDATE VIEWS ────────────────────────────
+    @app_commands.command(name="force_update", description="Force update views for all videos in active campaigns")
+    @app_commands.default_permissions(administrator=True)
+    @admin_only()
+    async def force_update(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.NotFound:
+            return
+
+        scraper_cog = self.bot.get_cog('PeriodicScraper')
+        if not scraper_cog:
+            await interaction.followup.send("❌ PeriodicScraper module not loaded.", ephemeral=True)
+            return
+
+        await interaction.followup.send("⏳ **Starting force update.** Scraping all tracked videos... This may take a while.", ephemeral=False)
+        
+        try:
+            summary = await scraper_cog.scrape_all_tracking_videos()
+            embed = discord.Embed(
+                title="✅ Force Update Complete",
+                color=discord.Color.green()
+            )
+            embed.add_field(
+                name="Results",
+                value=(
+                    f"✅ Successful: {summary['successful']}\n"
+                    f"❌ Failed: {summary['failed']}\n"
+                    f"📹 Total Videos: {summary.get('total_videos', summary['successful'] + summary['failed'])}"
+                ),
+                inline=False
+            )
+            if summary.get('errors') and summary['errors'][:3]:
+                embed.add_field(
+                    name="Recent Errors",
+                    value="\n".join(summary['errors'][:3]),
+                    inline=False
+                )
+            await interaction.channel.send(content=f"<@{interaction.user.id}>", embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error during force update: {e}", ephemeral=False)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))
