@@ -125,6 +125,9 @@ class PeriodicScraper(commands.Cog):
             if exp_at_str:
                 try:
                     exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
+                    if exp_at.tzinfo is None:
+                        exp_at = exp_at.replace(tzinfo=timezone.utc)
+                        
                     if datetime.now(timezone.utc) > exp_at:
                         metrics = await self.db.get_latest_metrics(video_id)
                         await self.db.mark_video_final(
@@ -135,6 +138,7 @@ class PeriodicScraper(commands.Cog):
                         )
                         continue
                 except Exception as e:
+                    print(f"[PeriodicScraper] Expiration error for {video_id}: {e}")
                     pass
 
             try:

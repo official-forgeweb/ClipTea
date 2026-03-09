@@ -90,6 +90,9 @@ class CampaignManager:
             if exp_at_str:
                 try:
                     exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
+                    if exp_at.tzinfo is None:
+                        exp_at = exp_at.replace(tzinfo=timezone.utc)
+
                     if datetime.now(timezone.utc) > exp_at:
                         # Finalize it
                         metrics = await self.db.get_latest_metrics(video_id)
@@ -103,7 +106,8 @@ class CampaignManager:
                         )
                         print(f"[CampaignManager] Finalized expired video {video_id}")
                         continue
-                except:
+                except Exception as e:
+                    print(f"[CampaignManager] Expiration error: {e}")
                     pass
 
             try:

@@ -19,35 +19,58 @@ from utils.permissions import is_admin
 
 def check_video_validity(posted_at_str: str) -> dict:
     """
-    Check if video is within 24-hour window.
-    posted_at_str format: "2026-03-04T17:15:46.000Z"
+    Standardizes social media timestamps into UTC-aware datetime objects
+    and checks if they fall within the 24-hour tracking window.
     """
     if not posted_at_str:
         return {"valid": True, "message": "No timestamp available"}
         
     try:
-        if "Z" in posted_at_str:
-            posted_at = datetime.fromisoformat(posted_at_str.replace("Z", "+00:00"))
-        else:
-            posted_at = datetime.fromisoformat(posted_at_str)
+        # 1. Handle Unix Epoch (int or float)
+        if isinstance(posted_at_str, (int, float)) or (isinstance(posted_at_str, str) and posted_at_str.isdigit()):
+            ts = float(posted_at_str)
+            # If timestamp is very large (ms based), divide by 1000
+            if ts > 10**11:
+                ts /= 1000
+            posted_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+        
+        # 2. Handle ISO strings
+        elif isinstance(posted_at_str, str):
+            # Standardize Z to +00:00 for isoformat
+            clean_str = posted_at_str.replace("Z", "+00:00")
+            # Handle Twitter style 'Wed Nov 20 17:15:46 +0000 2023' or similar if needed
+            # But Apify usually gives ISO. Let's stick to fromisoformat for now.
+            posted_at = datetime.fromisoformat(clean_str)
             if posted_at.tzinfo is None:
                 posted_at = posted_at.replace(tzinfo=timezone.utc)
-    except Exception:
+        else:
+            return {"valid": True, "message": "Unknown timestamp type"}
+            
+    except Exception as e:
+        print(f"[ValidityCheck] Timestamp error {posted_at_str}: {e}")
         return {"valid": True, "message": "Invalid timestamp format"}
         
     now = datetime.now(timezone.utc)
     age = now - posted_at
     
+    # 24 hour limit
     if age > timedelta(hours=24):
         return {
             "valid": False,
             "is_final": True,
             "remaining": "0h 0m",
             "status": "FINAL",
-            "message": "❌ This video was posted more than 24 hours ago and cannot be submitted."
+            "message": "❌ This video was posted more than 24 hours ago."
         }
     
-    remaining = timedelta(hours=24) - age
+    # If age is negative (posted in "future" due to minor clock drifts)
+    if age < timedelta(0):
+        remaining = timedelta(hours=24)
+        age_for_display = "Younger than 1 minute"
+    else:
+        remaining = timedelta(hours=24) - age
+        age_for_display = f"{age.seconds // 3600}h {(age.seconds % 3600) // 60}m ago"
+
     hours = int(remaining.total_seconds() // 3600)
     minutes = int((remaining.total_seconds() % 3600) // 60)
     
@@ -372,8 +395,10 @@ class SubmissionCommands(commands.Cog):
                             from datetime import timezone as tz
                             exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
                             if exp_dt.tzinfo is None:
-                                exp_dt = exp_dt.replace(tzinfo=tz.utc)
-                            remaining = exp_dt - datetime.now(tz.utc)
+                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                            
+                            now_utc = datetime.now(timezone.utc)
+                            remaining = exp_dt - now_utc
                             if remaining.total_seconds() > 0:
                                 hours = int(remaining.total_seconds() // 3600)
                                 minutes = int((remaining.total_seconds() % 3600) // 60)

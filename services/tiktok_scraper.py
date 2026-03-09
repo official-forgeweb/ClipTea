@@ -153,12 +153,20 @@ class TikTokApifyService:
         caption = item.get("text") or item.get("desc") or ""
         posted_at = item.get("createTimeISO") or item.get("createTime") or None
         
-        # If timestamp is integer (Unix), convert it
-        if isinstance(posted_at, (int, float)) and posted_at > 0:
+        # If timestamp is integer (Unix), convert it to UTC ISO string
+        if posted_at is not None:
             try:
-                posted_at = datetime.fromtimestamp(posted_at).isoformat()
+                import datetime as dt_mod
+                # Case 1: Already a number (Unix Epoch)
+                if isinstance(posted_at, (int, float)) and posted_at > 0:
+                    ts = float(posted_at)
+                    posted_at = dt_mod.datetime.fromtimestamp(ts, tz=dt_mod.timezone.utc).isoformat()
+                # Case 2: Stringified number
+                elif isinstance(posted_at, str) and posted_at.replace('.','',1).isdigit():
+                    ts = float(posted_at)
+                    posted_at = dt_mod.datetime.fromtimestamp(ts, tz=dt_mod.timezone.utc).isoformat()
             except:
-                posted_at = None
+                pass
 
         return {
             "views": views,
