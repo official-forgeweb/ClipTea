@@ -353,7 +353,11 @@ class SubmissionCommands(commands.Cog):
             
             total_views = 0
             for v in pages[page_idx]:
-                if v['is_final']:
+                if v.get('status') == 'rejected':
+                    views = 0
+                    likes = 0
+                    status_text = "🚫 **REJECTED**"
+                elif v['is_final']:
                     views = v['final_views']
                     likes = v['final_likes']
                     status_text = "🔴 **FINAL** (24h elapsed)"
@@ -464,7 +468,12 @@ class SubmissionCommands(commands.Cog):
         rate = campaign.get('rate_per_10k_views', 10.0) if campaign else 10.0
 
         latest = {}  # Initialize so it's always defined
-        if video['is_final']:
+        if video.get('status') == 'rejected':
+            views = 0
+            likes = 0
+            comments = 0
+            status_text = "🚫 REJECTED (Views Zeroed)"
+        elif video['is_final']:
             views = video['final_views']
             likes = video['final_likes']
             comments = video['final_comments']

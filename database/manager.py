@@ -495,6 +495,19 @@ class DatabaseManager:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def reject_video(self, discord_user_id: str, video_url: str) -> bool:
+        """Reject a user's video, stopping tracking and completely zeroing out its views."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            cursor = await db.execute(
+                """UPDATE submitted_videos 
+                   SET status = 'rejected', is_final = 1, final_views = 0, final_likes = 0, final_comments = 0 
+                   WHERE discord_user_id = ? AND video_url = ?""",
+                (discord_user_id, video_url)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def delete_video(self, video_url: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON;")

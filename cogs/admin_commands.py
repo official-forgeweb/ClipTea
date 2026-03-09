@@ -786,6 +786,62 @@ class AdminCommands(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error during force update: {e}", ephemeral=False)
 
+    # ── REJECT VIDEO ──────────────────────────────────
+    @app_commands.command(name="reject_video", description="Admin: Reject a specific video from a user (stops tracking and zeros views)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="The Discord user whose video to reject",
+        video_url="The URL of the video to reject"
+    )
+    @admin_only()
+    async def reject_video(self, interaction: discord.Interaction, user: discord.User, video_url: str):
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.NotFound:
+            return
+
+        from utils.platform_detector import normalize_url
+        norm_url = normalize_url(video_url)
+
+        # Confirm the video exists for this user
+        existing_video = await self.db.get_video_by_url(norm_url)
+        if not existing_video:
+            await interaction.followup.send(f"❌ Could not find video with URL: {video_url}", ephemeral=True)
+            return
+
+        if existing_video['discord_user_id'] != str(user.id):
+            await interaction.followup.send(f"❌ That video was submitted by <@{existing_video['discord_user_id']}>, not <@{user.id}>.", ephemeral=True)
+            return
+
+        if existing_video['status'] == 'rejected':
+            await interaction.followup.send("⚠️ This video is already rejected.", ephemeral=True)
+            return
+
+        # Reject it
+        success = await self.db.reject_video(str(user.id), norm_url)
+        
+        if success:
+            embed = discord.Embed(
+                title="🚫 Video Rejected",
+                description=f"Successfully rejected video submitted by <@{user.id}>.\n\n**Video:** [Link]({norm_url})\n\n*(Tracking stopped and views zeroed out)*",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=False)
+
+            # Attempt to DM the user
+            try:
+                dm_embed = discord.Embed(
+                    title="🚫 Video Rejected",
+                    description=f"Your submitted video has been rejected by an administrator. It will no longer be tracked for campaign rewards.\n\n**Video:** {norm_url}",
+                    color=discord.Color.red()
+                )
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+        else:
+            await interaction.followup.send("❌ Failed to reject the video. This could be a database error.", ephemeral=True)
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))
 
