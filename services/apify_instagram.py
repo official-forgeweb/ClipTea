@@ -105,39 +105,25 @@ class ApifyInstagramService:
                     )
                 """)
                 
+                # Always try adding missing columns (safe — fails silently if they already exist)
+                for col_sql in [
+                    "ALTER TABLE apify_cache ADD COLUMN shares INTEGER DEFAULT 0",
+                    "ALTER TABLE apify_cache ADD COLUMN posted_at TIMESTAMP DEFAULT NULL",
+                    "ALTER TABLE apify_cache ADD COLUMN caption TEXT DEFAULT ''",
+                    "ALTER TABLE api_usage ADD COLUMN service TEXT DEFAULT 'apify'",
+                    "ALTER TABLE api_usage ADD COLUMN error_message TEXT DEFAULT ''",
+                ]:
+                    try:
+                        await db.execute(col_sql)
+                    except Exception:
+                        pass  # Column already exists
+                
                 await db.commit()
                 print(f"[REEL] Database tables ready at {self.db_path}")
         except Exception as e:
             print(f"[REEL] Database init error: {e}")
-            # If table exists with wrong schema, try to fix it
-            try:
-                async with aiosqlite.connect(self.db_path) as db:
-                    # Try adding missing columns instead of dropping table
-                    try:
-                        await db.execute("ALTER TABLE api_usage ADD COLUMN service TEXT DEFAULT 'apify'")
-                    except:
-                        pass  # Column already exists
-                    try:
-                        await db.execute("ALTER TABLE api_usage ADD COLUMN error_message TEXT DEFAULT ''")
-                    except:
-                        pass
-                    try:
-                        await db.execute("ALTER TABLE apify_cache ADD COLUMN shares INTEGER DEFAULT 0")
-                    except:
-                        pass
-                    try:
-                        await db.execute("ALTER TABLE apify_cache ADD COLUMN posted_at TIMESTAMP DEFAULT NULL")
-                    except:
-                        pass
-                    try:
-                        await db.execute("ALTER TABLE apify_cache ADD COLUMN caption TEXT DEFAULT ''")
-                    except:
-                        pass
-                    await db.commit()
-                    print("[REEL] Database tables fixed")
-            except Exception as e2:
-                print(f"[REEL] Could not fix tables: {e2}")
     
+
     async def get_video_metrics(self, video_url: str, use_cache: bool = True) -> dict:
         """
         Main function: Get metrics for an Instagram video.
@@ -192,8 +178,10 @@ class ApifyInstagramService:
         )
         
         # Request body — the input for the scraper
+        # NOTE: apify/instagram-post-scraper requires "username" field
+        # (it accepts URLs in this field despite the confusing name)
         payload = {
-            "directUrls": [video_url],
+            "username": [video_url],
             "resultsLimit": 1
         }
         
@@ -324,6 +312,48 @@ class ApifyInstagramService:
         # Posted at timestamp
         posted_at = item.get("timestamp") or item.get("created_at") or None
         
+        # --- Description Regex Fallback (Important for 'restricted_page' errors) ---
+        description = item.get("description", "")
+        if description and isinstance(description, str):
+            import re
+            
+            def parse_number(s):
+                s = s.lower().replace(',', '').strip()
+                multiplier = 1
+                if 'k' in s:
+                    multiplier = 1000
+                    s = s.replace('k', '')
+                elif 'm' in s:
+                    multiplier = 1000000
+                    s = s.replace('m', '')
+                try:
+                    return int(float(s) * multiplier)
+                except:
+                    return 0
+
+            # Extract metrics from descriptions like "20 likes, 0 comments - user on ..."
+            if likes == 0:
+                l_match = re.search(r'([\d,.]+k?m?)\s+likes', description, re.IGNORECASE)
+                if l_match:
+                    likes = parse_number(l_match.group(1))
+            
+            if comments == 0:
+                c_match = re.search(r'([\d,.]+k?m?)\s+comments', description, re.IGNORECASE)
+                if c_match:
+                    comments = parse_number(c_match.group(1))
+
+            if views == 0:
+                # SEO descriptions rarely show views, but we check just in case
+                v_match = re.search(r'([\d,.]+k?m?)\s+views', description, re.IGNORECASE)
+                if v_match:
+                    views = parse_number(v_match.group(1))
+            
+            if not author:
+                # Part of description: "- elitepokermoments on March 11, 2026"
+                a_match = re.search(r'-\s+([\w.]+)\s+on\s+', description)
+                if a_match:
+                    author = a_match.group(1)
+
         # Ensure all values are integers
         try:
             views = int(views) if views else 0
