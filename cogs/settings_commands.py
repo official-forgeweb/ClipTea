@@ -15,8 +15,7 @@ class SettingsCommands(commands.Cog):
     # ── SETTINGS GROUP ─────────────────────────────────
     settings_group = app_commands.Group(
         name="settings", 
-        description="View or update global bot settings",
-        default_permissions=discord.Permissions(administrator=True)
+        description="View or update global bot settings"
     )
 
     @settings_group.command(name="view", description="View current global default settings")
@@ -160,7 +159,7 @@ class SettingsCommands(commands.Cog):
 
     # ── NOTIFICATION CHANNEL ───────────────────────────
     @app_commands.command(name="set_notification_channel", description="Set the channel for bot notifications")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         channel="Channel for bot notifications",
         notification_type="Type of notifications to send"

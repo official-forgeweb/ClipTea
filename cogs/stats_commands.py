@@ -198,42 +198,93 @@ class StatsCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
 
-        rate = 10.0
         campaign_name = "Global"
         if campaign_id:
             campaign = await self.db.get_campaign(campaign_id)
             if campaign:
-                rate = campaign.get('rate_per_10k_views', 10.0)
                 campaign_name = campaign['name']
 
+        # ── Resolve usernames ──────────────────────────
+        resolved_names = {}
+        for entry in entries:
+            uid = entry['discord_user_id']
+            name = None
+            # Try guild member cache first
+            if interaction.guild:
+                member = interaction.guild.get_member(int(uid))
+                if member:
+                    name = member.display_name
+            # Fallback: fetch from Discord API
+            if not name:
+                try:
+                    user = await self.bot.fetch_user(int(uid))
+                    name = user.display_name if user else uid
+                except Exception:
+                    name = uid
+            resolved_names[uid] = name
+
+        # ── Build table ────────────────────────────────
+        # Column headers based on metric
+        if metric_value == "videos":
+            col_headers = ("#", "Clipper", "Videos", "Views", "Likes")
+        elif metric_value == "likes":
+            col_headers = ("#", "Clipper", "Likes", "Views", "Videos")
+        else:
+            col_headers = ("#", "Clipper", "Views", "Videos", "Likes")
+
+        # Build rows
+        rows = []
+        for i, entry in enumerate(entries, 1):
+            uid = entry['discord_user_id']
+            name = resolved_names.get(uid, uid)[:14]  # Truncate long names
+            views = format_compact(entry['total_views'])
+            likes = format_compact(entry['total_likes']) if 'total_likes' in entry else "0"
+            videos = str(entry['total_videos'])
+
+            if metric_value == "videos":
+                rows.append((medal_emoji(i), name, videos, views, likes))
+            elif metric_value == "likes":
+                rows.append((medal_emoji(i), name, likes, views, videos))
+            else:
+                rows.append((medal_emoji(i), name, views, videos, likes))
+
+        # Calculate column widths
+        col_widths = [
+            max(len(str(col_headers[0])), max(len(str(r[0])) for r in rows)),
+            max(len(col_headers[1]), max(len(r[1]) for r in rows)),
+            max(len(col_headers[2]), max(len(r[2]) for r in rows)),
+            max(len(col_headers[3]), max(len(r[3]) for r in rows)),
+            max(len(col_headers[4]), max(len(r[4]) for r in rows)),
+        ]
+
+        # Build the table string
+        header = (
+            f"{col_headers[0]:<{col_widths[0]}}  "
+            f"{col_headers[1]:<{col_widths[1]}}  "
+            f"{col_headers[2]:>{col_widths[2]}}  "
+            f"{col_headers[3]:>{col_widths[3]}}  "
+            f"{col_headers[4]:>{col_widths[4]}}"
+        )
+        separator = "─" * len(header)
+
+        table = f"```\n{header}\n{separator}\n"
+        for row in rows:
+            table += (
+                f"{row[0]:<{col_widths[0]}}  "
+                f"{row[1]:<{col_widths[1]}}  "
+                f"{row[2]:>{col_widths[2]}}  "
+                f"{row[3]:>{col_widths[3]}}  "
+                f"{row[4]:>{col_widths[4]}}\n"
+            )
+        table += "```"
+
         embed = discord.Embed(
-            title=f"🏆 LEADERBOARD: {campaign_name}",
-            description=f"Sorted by: **{metric_value.title()}**",
+            title=f"🏆 LEADERBOARD — {campaign_name}",
+            description=f"Sorted by: **{metric_value.title()}**\n{table}",
             color=discord.Color.gold()
         )
 
-        leaderboard_text = "```\n#   Clipper          Videos  Views       Earnings\n"
-        leaderboard_text += "──  ──────────────── ─────── ──────────  ─────────\n"
-
-        for i, entry in enumerate(entries, 1):
-            try:
-                member = interaction.guild.get_member(int(entry['discord_user_id']))
-                display_name = member.display_name[:16] if member else f"User {entry['discord_user_id'][:8]}"
-            except Exception:
-                display_name = f"User {entry['discord_user_id'][:8]}"
-
-            medal = medal_emoji(i)
-            earned = calculate_earnings(entry['total_views'], rate)
-
-            leaderboard_text += (
-                f"{medal:3s} {display_name:16s} {entry['total_videos']:>7d}  "
-                f"{format_number(entry['total_views']):>10s}  "
-                f"{format_currency(earned):>9s}\n"
-            )
-
-        leaderboard_text += "```"
-        embed.add_field(name="\u200b", value=leaderboard_text, inline=False)
-
+        # Find user's position
         all_entries = await self.db.get_leaderboard(campaign_id, metric=metric_value, limit=100)
         user_pos = None
         for i, entry in enumerate(all_entries, 1):
@@ -242,12 +293,13 @@ class StatsCommands(commands.Cog):
                 break
 
         if user_pos:
-            embed.set_footer(text=f"Your Position: #{user_pos}")
+            embed.set_footer(text=f"📍 Your Position: #{user_pos}")
     
         try:
             await interaction.followup.send(embed=embed)
         except:
             pass
+
 
     @leaderboard.autocomplete("campaign_id")
     async def leaderboard_autocomplete(self, interaction: discord.Interaction, current: str):

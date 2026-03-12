@@ -13,15 +13,11 @@ class PaymentCommands(commands.Cog):
     @app_commands.command(name="set_payment", description="Set your crypto payment address")
     @app_commands.describe(
         crypto_type="Type of cryptocurrency",
-        address="Your wallet address"
+        address="Your ERC20 wallet address"
     )
     @app_commands.choices(crypto_type=[
-        app_commands.Choice(name="Ethereum (ETH) / ERC20", value="ETH"),
-        app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
-        app_commands.Choice(name="Solana (SOL)", value="SOL"),
         app_commands.Choice(name="USDT (ERC20)", value="USDT-ERC20"),
-        app_commands.Choice(name="USDT (TRC20)", value="USDT-TRC20"),
-        app_commands.Choice(name="Other", value="Other")
+        app_commands.Choice(name="USDC (ERC20)", value="USDC-ERC20"),
     ])
     async def set_payment(
         self,
@@ -36,26 +32,14 @@ class PaymentCommands(commands.Cog):
 
         address = address.strip()
         
-        # Basic validation
-        is_valid = True
-        error_msg = ""
-        
-        if crypto_type == "ETH" or crypto_type == "USDT-ERC20":
-            if not re.match(r"^0x[a-fA-F0-9]{40}$", address):
-                is_valid = False
-                error_msg = "Invalid Ethereum/ERC20 address format."
-        elif crypto_type == "BTC":
-            if not re.match(r"^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$|^bc1[ac-hj-np-z02-9]{11,71}$", address):
-                is_valid = False
-                error_msg = "Invalid Bitcoin address format."
-        elif crypto_type == "SOL":
-            if not re.match(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$", address):
-                is_valid = False
-                error_msg = "Invalid Solana address format."
-        
-        if not is_valid:
-            await interaction.followup.send(f"❌ {error_msg}", ephemeral=True)
+        # ERC20 address validation
+        if not re.match(r"^0x[a-fA-F0-9]{40}$", address):
+            await interaction.followup.send(
+                "❌ Invalid ERC20 address format. Must start with `0x` followed by 40 hex characters.",
+                ephemeral=True
+            )
             return
+
 
         await self.db.set_user_payment(str(interaction.user.id), crypto_type, address)
         

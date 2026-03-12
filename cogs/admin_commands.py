@@ -18,7 +18,7 @@ class AdminCommands(commands.Cog):
 
     # ── CREATE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="create_campaign", description="Create a new tracking campaign")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         name="Campaign display name",
         duration_days="Campaign duration in days (default: unlimited)",
@@ -121,7 +121,7 @@ class AdminCommands(commands.Cog):
 
     # ── UPDATE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="update_campaign", description="Update an existing campaign's settings")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         campaign_id="Campaign to update",
         name="New campaign name",
@@ -220,7 +220,7 @@ class AdminCommands(commands.Cog):
 
     # ── END CAMPAIGN ───────────────────────────────────
     @app_commands.command(name="end_campaign", description="Manually end a campaign")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         campaign_id="Campaign to end",
         reason="Reason for ending the campaign"
@@ -331,7 +331,7 @@ class AdminCommands(commands.Cog):
 
     # ── DELETE CAMPAIGN ────────────────────────────────
     @app_commands.command(name="delete_campaign", description="Permanently delete a campaign")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(campaign_id="Campaign to delete")
     @admin_only()
     async def delete_campaign(self, interaction: discord.Interaction, campaign_id: str):
@@ -383,7 +383,7 @@ class AdminCommands(commands.Cog):
 
     # ── API USAGE ──────────────────────────────────────
     @app_commands.command(name="api_usage", description="View API usage statistics")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(days="Number of days to look back (default: 7)")
     @admin_only()
     async def api_usage(self, interaction: discord.Interaction, days: int = 7):
@@ -437,7 +437,7 @@ class AdminCommands(commands.Cog):
             pass
 
     @app_commands.command(name="export", description="Export campaign submission data with clipper breakdown")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         campaign_id="Campaign ID to export"
     )
@@ -640,7 +640,7 @@ class AdminCommands(commands.Cog):
 
     # ── USER INFO (Admin) ─────────────────────────────
     @app_commands.command(name="user_info", description="View a user's payment info, linked accounts, and campaigns")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(user="The Discord user to look up")
     @admin_only()
     async def user_info(self, interaction: discord.Interaction, user: discord.User):
@@ -746,7 +746,7 @@ class AdminCommands(commands.Cog):
 
     # ── FORCE UPDATE VIEWS ────────────────────────────
     @app_commands.command(name="force_update", description="Force update views for all videos in active campaigns")
-    @app_commands.default_permissions(administrator=True)
+
     @admin_only()
     async def force_update(self, interaction: discord.Interaction):
         try:
@@ -788,7 +788,7 @@ class AdminCommands(commands.Cog):
 
     # ── REJECT VIDEO ──────────────────────────────────
     @app_commands.command(name="reject_video", description="Admin: Reject a specific video from a user (stops tracking and zeros views)")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         user="The Discord user whose video to reject",
         video_url="The URL of the video to reject"
@@ -843,7 +843,7 @@ class AdminCommands(commands.Cog):
 
     # ── REJECT USER ──────────────────────────────────
     @app_commands.command(name="reject_user", description="Admin: Ban a user from a campaign and zero their video views")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         user="The Discord user to ban",
         campaign_id="The ID of the campaign to ban them from"
@@ -896,7 +896,7 @@ class AdminCommands(commands.Cog):
 
     # ── UNREJECT USER ────────────────────────────────
     @app_commands.command(name="unreject_user", description="Admin: Unban a user from a campaign and restore their video tracking")
-    @app_commands.default_permissions(administrator=True)
+
     @app_commands.describe(
         user="The Discord user to unban",
         campaign_id="The ID of the campaign"
@@ -938,7 +938,7 @@ class AdminCommands(commands.Cog):
 
     # ── QUEUE STATS ───────────────────────────────────
     @app_commands.command(name="queue_stats", description="Admin: View scrape queue health")
-    @app_commands.default_permissions(administrator=True)
+
     @admin_only()
     async def queue_stats(self, interaction: discord.Interaction):
         try:
