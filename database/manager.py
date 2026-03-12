@@ -518,6 +518,40 @@ class DatabaseManager:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def reject_user(self, campaign_id: str, discord_user_id: str) -> bool:
+        """Ban a user from a campaign, completely zeroing out all their video views."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            await db.execute(
+                "UPDATE campaign_members SET status = 'removed' WHERE campaign_id = ? AND discord_user_id = ?",
+                (campaign_id, discord_user_id)
+            )
+            cursor = await db.execute(
+                """UPDATE submitted_videos 
+                   SET status = 'rejected', is_final = 1, final_views = 0, final_likes = 0, final_comments = 0 
+                   WHERE campaign_id = ? AND discord_user_id = ? AND status != 'deleted'""",
+                (campaign_id, discord_user_id)
+            )
+            await db.commit()
+            return True
+
+    async def unreject_user(self, campaign_id: str, discord_user_id: str) -> bool:
+        """Unban a user from a campaign and restore their rejected videos to active tracking."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            await db.execute(
+                "UPDATE campaign_members SET status = 'active' WHERE campaign_id = ? AND discord_user_id = ? AND status = 'removed'",
+                (campaign_id, discord_user_id)
+            )
+            cursor = await db.execute(
+                """UPDATE submitted_videos 
+                   SET status = 'tracking', is_final = 0 
+                   WHERE campaign_id = ? AND discord_user_id = ? AND status = 'rejected'""",
+                (campaign_id, discord_user_id)
+            )
+            await db.commit()
+            return True
+
     async def get_campaign_video_count(self, campaign_id: str) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(

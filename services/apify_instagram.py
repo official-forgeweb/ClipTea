@@ -138,7 +138,7 @@ class ApifyInstagramService:
             except Exception as e2:
                 print(f"[REEL] Could not fix tables: {e2}")
     
-    async def get_video_metrics(self, video_url: str) -> dict:
+    async def get_video_metrics(self, video_url: str, use_cache: bool = True) -> dict:
         """
         Main function: Get metrics for an Instagram video.
         
@@ -156,9 +156,10 @@ class ApifyInstagramService:
             }
         
         # Step 1: Check cache
-        cached = await self._get_from_cache(shortcode)
-        if cached:
-            return cached
+        if use_cache:
+            cached = await self._get_from_cache(shortcode)
+            if cached:
+                return cached
         
         # Step 2: Call Apify API
         if self.token:
@@ -192,7 +193,7 @@ class ApifyInstagramService:
         
         # Request body — the input for the scraper
         payload = {
-            "username": [video_url],
+            "directUrls": [video_url],
             "resultsLimit": 1
         }
         

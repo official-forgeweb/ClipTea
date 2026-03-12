@@ -129,20 +129,32 @@ class PeriodicScraper(commands.Cog):
                         exp_at = exp_at.replace(tzinfo=timezone.utc)
                         
                     if datetime.now(timezone.utc) > exp_at:
-                        metrics = await self.db.get_latest_metrics(video_id)
-                        await self.db.mark_video_final(
-                            video_id,
-                            metrics.get('views', 0) if metrics else 0,
-                            metrics.get('likes', 0) if metrics else 0,
-                            metrics.get('comments', 0) if metrics else 0
-                        )
+                        # Perform one last scrape before marking final
+                        try:
+                            metrics = await self.scraper.get_video_metrics(video_url, platform, use_cache=False)
+                        except Exception:
+                            metrics = None
+                        
+                        if metrics and not metrics.get("error"):
+                            final_v = metrics.get("views", 0)
+                            final_l = metrics.get("likes", 0)
+                            final_c = metrics.get("comments", 0)
+                        else:
+                            # Fallback to latest known if final scrape fails
+                            latest = await self.db.get_latest_metrics(video_id)
+                            final_v = latest.get('views', 0) if latest else 0
+                            final_l = latest.get('likes', 0) if latest else 0
+                            final_c = latest.get('comments', 0) if latest else 0
+
+                        await self.db.mark_video_final(video_id, final_v, final_l, final_c)
+                        summary["successful"] += 1
                         continue
                 except Exception as e:
                     print(f"[PeriodicScraper] Expiration error for {video_id}: {e}")
                     pass
 
             try:
-                metrics = await self.scraper.get_video_metrics(video_url, platform)
+                metrics = await self.scraper.get_video_metrics(video_url, platform, use_cache=False)
                 if metrics and not metrics.get("error"):
                     await self.db.save_metric_snapshot(
                         video_id=video_id,

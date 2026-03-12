@@ -19,7 +19,7 @@ class UnifiedScraper:
         self.twitter = TwitterApifyService(db)
         self.youtube = YouTubeService()
         
-    async def get_video_metrics(self, url: str, platform: str = None) -> Dict[str, Any]:
+    async def get_video_metrics(self, url: str, platform: str = None, use_cache: bool = True) -> Dict[str, Any]:
         """Get metrics for any supported video URL.
         
         If platform is not provided, it will be auto-detected from the URL.
@@ -44,18 +44,18 @@ class UnifiedScraper:
                 "platform": "unknown"
             }
             
-        print(f"[UnifiedScraper] Processing {platform} URL: {url}")
+        print(f"[UnifiedScraper] Processing {platform} URL: {url} (use_cache={use_cache})")
         
         try:
             # Delegate to appropriate service
             if platform == "instagram":
-                result = await self.instagram.get_video_metrics(url)
+                result = await self.instagram.get_video_metrics(url, use_cache=use_cache)
             elif platform == "tiktok":
-                result = await self.tiktok.get_video_metrics(url)
+                result = await self.tiktok.get_video_metrics(url, use_cache=use_cache)
             elif platform == "twitter":
-                result = await self.twitter.get_video_metrics(url)
+                result = await self.twitter.get_video_metrics(url, use_cache=use_cache)
             elif platform == "youtube":
-                result = await self.youtube.get_video_metrics(url)
+                result = await self.youtube.get_video_metrics(url) # YouTube doesn't have local cache table
             else:
                 return {
                     "error": f"Scraper not implemented for platform: {platform}",

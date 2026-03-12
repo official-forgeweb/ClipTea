@@ -32,7 +32,7 @@ class TikTokApifyService:
             elif hasattr(db_path, 'path'): self.db_path = db_path.path
             else: self.db_path = "cliptea.db"
 
-    async def get_video_metrics(self, video_url: str) -> dict:
+    async def get_video_metrics(self, video_url: str, use_cache: bool = True) -> dict:
         """Get metrics for a TikTok video. Checks cache first."""
         video_id = self._extract_video_id(video_url)
         if not video_id:
@@ -44,9 +44,10 @@ class TikTokApifyService:
                 return {"error": "Could not extract TikTok video ID"}
 
         # 1. Check cache
-        cached = await self._get_from_cache(video_id)
-        if cached:
-            return cached
+        if use_cache:
+            cached = await self._get_from_cache(video_id)
+            if cached:
+                return cached
 
         # 2. Call Apify
         if not self.token:

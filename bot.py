@@ -207,6 +207,14 @@ class CampaignBot(commands.Bot):
             if err_name in ('ClientConnectorDNSError', 'ClientConnectorError',
                             'ClientOSError', 'ConnectionResetError', 'OSError'):
                 print(f"[NETWORK] Transient error in {getattr(interaction.command, 'name', '?')}: {err_name}")
+                try:
+                    msg = "⚠️ A temporary connection issue occurred. Please try the command again in a few moments."
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(msg, ephemeral=True)
+                    else:
+                        await interaction.followup.send(msg, ephemeral=True)
+                except:
+                    pass
                 return
 
         # 2. Permission denied — tell the user nicely

@@ -291,7 +291,7 @@ class AccountCommands(commands.Cog):
         embed = discord.Embed(
             title=f"{emoji} {platform.name} Account Verification",
             description=(
-                f"To link **@{clean_username}**, add the code below to your **{platform.title()} {bio_location}**.\n"
+                f"To link **@{clean_username}**, add the code below to your **{platform.value.title()} {bio_location}**.\n"
                 "Once done, click **✅ Verify Now**."
             ),
             color=color

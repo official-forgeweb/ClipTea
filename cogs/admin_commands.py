@@ -841,6 +841,101 @@ class AdminCommands(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to reject the video. This could be a database error.", ephemeral=True)
 
+    # ── REJECT USER ──────────────────────────────────
+    @app_commands.command(name="reject_user", description="Admin: Ban a user from a campaign and zero their video views")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="The Discord user to ban",
+        campaign_id="The ID of the campaign to ban them from"
+    )
+    @admin_only()
+    async def reject_user(self, interaction: discord.Interaction, user: discord.User, campaign_id: str):
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.NotFound:
+            return
+
+        campaign = await self.db.get_campaign(campaign_id)
+        if not campaign:
+            await interaction.followup.send(f"❌ Campaign `{campaign_id}` not found.", ephemeral=True)
+            return
+
+        success = await self.db.reject_user(campaign_id, str(user.id))
+        
+        if success:
+            embed = discord.Embed(
+                title="🚫 User Rejected from Campaign",
+                description=f"Successfully banned <@{user.id}> from **{campaign['name']}**.\n\n*(Their membership is removed, tracking stopped, and views zeroed out)*",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=False)
+
+            # Attempt to DM the user
+            try:
+                dm_embed = discord.Embed(
+                    title="🚫 Campaign Ban",
+                    description=f"You have been removed from the campaign **{campaign['name']}**.\n\nYour submitted videos will no longer be tracked, and all views have been voided for this campaign.",
+                    color=discord.Color.red()
+                )
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+        else:
+            await interaction.followup.send("❌ Failed to reject the user. Database error.", ephemeral=True)
+
+    @reject_user.autocomplete("campaign_id")
+    async def reject_user_autocomplete(self, interaction: discord.Interaction, current: str):
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
+
+    # ── UNREJECT USER ────────────────────────────────
+    @app_commands.command(name="unreject_user", description="Admin: Unban a user from a campaign and restore their video tracking")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="The Discord user to unban",
+        campaign_id="The ID of the campaign"
+    )
+    @admin_only()
+    async def unreject_user(self, interaction: discord.Interaction, user: discord.User, campaign_id: str):
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.NotFound:
+            return
+
+        campaign = await self.db.get_campaign(campaign_id)
+        if not campaign:
+            await interaction.followup.send(f"❌ Campaign `{campaign_id}` not found.", ephemeral=True)
+            return
+
+        success = await self.db.unreject_user(campaign_id, str(user.id))
+        
+        if success:
+            embed = discord.Embed(
+                title="✅ User Unbanned",
+                description=f"Successfully unbanned <@{user.id}> from **{campaign['name']}**.\n\n*(Their rejected videos are now active again and views will update on the next tracking cycle)*",
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=False)
+        else:
+            await interaction.followup.send("❌ Failed to unreject the user.", ephemeral=True)
+
+    @unreject_user.autocomplete("campaign_id")
+    async def unreject_user_autocomplete(self, interaction: discord.Interaction, current: str):
+        try:
+            campaigns = await self.db.get_all_campaigns()
+            return [
+                app_commands.Choice(name=f"{c['name']} ({c['id']})", value=c['id'])
+                for c in campaigns if current.lower() in c['name'].lower() or current.lower() in c['id'].lower()
+            ][:25]
+        except Exception:
+            return []
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))
