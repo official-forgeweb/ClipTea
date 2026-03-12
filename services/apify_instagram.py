@@ -190,7 +190,7 @@ class ApifyInstagramService:
         }
         
         try:
-            timeout = aiohttp.ClientTimeout(total=60)  # 60 second max
+            timeout = aiohttp.ClientTimeout(total=120)  # 120 second max
             
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 print(f"[REEL] Calling: {self.BASE_URL}/acts/{self.actor_id}/run-sync-get-dataset-items")
@@ -230,7 +230,7 @@ class ApifyInstagramService:
                     return self._parse_apify_response(item)
         
         except asyncio.TimeoutError:
-            print("[Apify] Request timed out (60 seconds)")
+            print("[Apify] Request timed out (120 seconds)")
             return {"error": "Apify request timed out"}
         except aiohttp.ClientError as e:
             print(f"[Apify] Connection error: {e}")
@@ -245,6 +245,37 @@ class ApifyInstagramService:
         Different scrapers use different field names.
         Check all possible variations.
         """
+        # ── CHECK FOR RESTRICTED PAGE ERROR FIRST ──────────
+        error_val = str(item.get("error", "")).lower()
+        error_desc = str(item.get("errorDescription", "")).lower()
+
+        if "restricted" in error_val or "restricted" in error_desc:
+            # Extract whatever partial data is available
+            author = (
+                item.get("ownerUsername") or
+                item.get("owner_username") or
+                item.get("username") or ""
+            )
+            caption = item.get("caption", "")
+            if isinstance(caption, dict):
+                caption = caption.get("text", "")
+
+            print(f"[Apify] ⚠️ RESTRICTED PAGE — partial data only, author={author}")
+
+            return {
+                "views": 0,
+                "likes": 0,
+                "comments": 0,
+                "shares": 0,
+                "author_username": str(author),
+                "caption": str(caption or "")[:200],
+                "method": "apify_restricted",
+                "estimated": True,
+                "cached": False,
+                "error": "restricted_page",
+                "partial_data": True,
+            }
+
         # Views — check all possible field names
         views = (
             item.get("videoPlayCount") or

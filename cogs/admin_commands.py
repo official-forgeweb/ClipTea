@@ -936,6 +936,72 @@ class AdminCommands(commands.Cog):
         except Exception:
             return []
 
+    # ── QUEUE STATS ───────────────────────────────────
+    @app_commands.command(name="queue_stats", description="Admin: View scrape queue health")
+    @app_commands.default_permissions(administrator=True)
+    @admin_only()
+    async def queue_stats(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+
+        queue = getattr(self.bot, 'scrape_queue', None)
+        if not queue:
+            await interaction.followup.send("❌ Queue not initialized yet.", ephemeral=True)
+            return
+
+        stats = queue.get_stats()
+
+        embed = discord.Embed(
+            title="📊 Scrape Queue Status",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="📥 Queue",
+            value=(
+                f"**Main queue:** {stats['queue_size']} jobs\n"
+                f"**Retry queue:** {stats['retry_queue_size']} jobs"
+            ),
+            inline=True
+        )
+        embed.add_field(
+            name="📈 Performance",
+            value=(
+                f"**Processed:** {stats['jobs_processed']}\n"
+                f"**Succeeded:** {stats['jobs_succeeded']}\n"
+                f"**Failed:** {stats['jobs_failed']}\n"
+                f"**Success rate:** {stats['success_rate']}"
+            ),
+            inline=True
+        )
+        embed.add_field(
+            name="⏱️ Timing",
+            value=(
+                f"**Current delay:** {stats['current_delay']}\n"
+                f"**Consecutive errors:** {stats['consecutive_errors']}\n"
+                f"**Last request:** {stats['last_request']}"
+            ),
+            inline=False
+        )
+
+        # Backoff level indicator
+        level = stats['consecutive_errors']
+        if level == 0:
+            status_icon = "🟢 Normal"
+        elif level <= 2:
+            status_icon = "🟡 Elevated"
+        else:
+            status_icon = "🔴 High Backoff"
+
+        embed.add_field(
+            name="🚦 Status",
+            value=status_icon,
+            inline=True
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCommands(bot))

@@ -780,3 +780,32 @@ class DatabaseManager:
                 "SELECT * FROM notifications ORDER BY sent_at DESC LIMIT ?", (limit,)
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
+
+    # ═══════════════════════════════════════════════
+    # MIGRATIONS (for queue system)
+    # ═══════════════════════════════════════════════
+
+    async def run_migrations(self):
+        """Add new columns needed for the smart queue system."""
+        migrations = [
+            "ALTER TABLE submitted_videos ADD COLUMN last_scraped_at TIMESTAMP",
+            "ALTER TABLE submitted_videos ADD COLUMN scrape_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE submitted_videos ADD COLUMN last_error TEXT DEFAULT ''",
+        ]
+        async with aiosqlite.connect(self.db_path) as db:
+            for sql in migrations:
+                try:
+                    await db.execute(sql)
+                except Exception:
+                    pass  # Column already exists
+            await db.commit()
+
+    async def update_last_scraped(self, video_url: str):
+        """Update last_scraped_at timestamp for a video."""
+        from datetime import datetime
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE submitted_videos SET last_scraped_at = ? WHERE video_url = ?",
+                (datetime.now().isoformat(), video_url),
+            )
+            await db.commit()

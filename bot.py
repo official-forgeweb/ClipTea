@@ -73,6 +73,18 @@ class CampaignBot(commands.Bot):
         await apify_service.init_tables()
         print("[BOT] Apify database tables initialized")
 
+        # Initialize smart scrape queue
+        from services.scrape_queue import ScrapeQueue
+        from database.manager import DatabaseManager
+        queue_db = DatabaseManager()
+        self.scrape_queue = ScrapeQueue(apify_service, db_manager=queue_db)
+        await self.scrape_queue.start()
+        print("[BOT] Smart scrape queue started")
+
+        # Run database migrations for queue system columns
+        await queue_db.run_migrations()
+        print("[BOT] Database migrations applied")
+
         # Proactively start fetching proxies in the background
         from anti_detection.proxy_rotator import ProxyRotator
         rotator = ProxyRotator()

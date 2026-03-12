@@ -115,192 +115,402 @@ class SubmissionCommands(commands.Cog):
         except discord.errors.NotFound:
             return
 
-        # STEP 1: Process URL list
-        urls = [u.strip() for u in video_urls.split(",") if u.strip()]
-        if not urls:
-            await interaction.followup.send("❌ No URLs provided.", ephemeral=True)
-            return
-            
-        if len(urls) > 10:
-            await interaction.followup.send(f"❌ Maximum 10 videos per submission. You sent {len(urls)}.", ephemeral=True)
-            return
-
-        # STEP 2: Check campaign exists and is active
-        campaign = await self.db.get_campaign(campaign_id)
-        if not campaign:
-            await interaction.followup.send(f"❌ Campaign `{campaign_id}` not found.", ephemeral=True)
-            return
-
-        if campaign['status'] != 'active':
-            await interaction.followup.send(f"❌ Campaign `{campaign_id}` is not active.", ephemeral=True)
-            return
-
-        # STEP 3: Check membership
-        user_id = str(interaction.user.id)
-        if not await self.db.is_campaign_member(campaign_id, user_id):
-            await interaction.followup.send(f"❌ You haven't joined this campaign.\nUse `/join {campaign_id}` first.", ephemeral=True)
-            return
-
-        # Prepare results
-        results = []
-        progress_embed = discord.Embed(
-            title=f"⏳ Processing 0/{len(urls)} videos...",
-            color=discord.Color.gold()
-        )
         try:
-            progress_msg = await interaction.followup.send(embed=progress_embed, ephemeral=True)
-        except:
-            return
+            # STEP 1: Process URL list
+            urls = [u.strip() for u in video_urls.split(",") if u.strip()]
 
-        await self._ensure_initialized()
-        
-        for i, url in enumerate(urls):
-            # Update progress
-            current_url_display = url[:50] + ("..." if len(url) > 50 else "")
-            progress_embed.title = f"⏳ Processing {i+1}/{len(urls)} videos..."
-            progress_embed.description = f"Current: {current_url_display}"
-            try:
-                await progress_msg.edit(embed=progress_embed)
-            except:
-                pass
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_urls = []
+            for url in urls:
+                if url not in seen:
+                    seen.add(url)
+                    unique_urls.append(url)
+            urls = unique_urls
 
-            # Validate each URL
-            norm_url = normalize_url(url)
-            platform = detect_platform(norm_url)
-            
-            if not platform:
-                results.append(f"❌ `{url[:30]}...` — Invalid URL")
-                continue
+            if not urls:
+                await interaction.followup.send("❌ No URLs provided.", ephemeral=True)
+                return
 
-            # Check platform compatibility
-            campaign_platforms = campaign.get('platforms', 'all')
-            if campaign_platforms != 'all' and platform != campaign_platforms:
-                results.append(f"❌ `{url[:30]}...` — Wrong platform (only {campaign_platforms})")
-                continue
+            if len(urls) > 10:
+                await interaction.followup.send(
+                    f"❌ Maximum 10 videos per submission. You sent {len(urls)}.",
+                    ephemeral=True,
+                )
+                return
 
-            # Check linked account(s) — user may have multiple accounts on the same platform
-            accounts = await self.db.get_user_accounts(user_id)
-            platform_accounts = [a for a in accounts if a['platform'] == platform and a.get('verified')]
-            
-            if not platform_accounts:
-                # Check if they have unverified accounts
-                unverified = [a for a in accounts if a['platform'] == platform and not a.get('verified')]
-                if unverified:
-                    results.append(f"❌ `{url[:30]}...` — Account @{unverified[0]['platform_username']} is NOT verified")
+            # STEP 2: Check campaign exists and is active
+            campaign = await self.db.get_campaign(campaign_id)
+            if not campaign:
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` not found.", ephemeral=True
+                )
+                return
+
+            if campaign["status"] != "active":
+                await interaction.followup.send(
+                    f"❌ Campaign `{campaign_id}` is not active.", ephemeral=True
+                )
+                return
+
+            # STEP 3: Check membership
+            user_id = str(interaction.user.id)
+            if not await self.db.is_campaign_member(campaign_id, user_id):
+                await interaction.followup.send(
+                    f"❌ You haven't joined this campaign.\nUse `/join {campaign_id}` first.",
+                    ephemeral=True,
+                )
+                return
+
+            # STEP 4: Validate URLs and detect platforms
+            validated_urls = []
+            invalid_urls = []
+            for url in urls:
+                norm = normalize_url(url)
+                platform = detect_platform(norm)
+                if platform:
+                    validated_urls.append((norm, platform))
                 else:
-                    results.append(f"❌ `{url[:30]}...` — Link {platform.title()} first")
-                continue
+                    invalid_urls.append(url)
 
-            # Check duplicates (same campaign + url)
-            existing = await self.db.get_submitted_video_by_url(campaign_id, norm_url)
-            if existing:
-                results.append(f"❌ `{url[:30]}...` — Already submitted here")
-                continue
-                
-            # Check global duplicate (different campaign)
-            global_existing = await self.db.get_video_by_url(norm_url)
-            if global_existing and global_existing['campaign_id'] != campaign_id:
-                # We allow it but note it in results
-                dup_notice = f" (Note: already in {global_existing['campaign_id']})"
-            else:
-                dup_notice = ""
+            if not validated_urls:
+                await interaction.followup.send(
+                    "❌ No valid Instagram/TikTok/YouTube/Twitter URLs found.",
+                    ephemeral=True,
+                )
+                return
 
-            # Scrape
+            await self._ensure_initialized()
+
+            # ── SINGLE VIDEO — simple flow ─────────────────
+            if len(validated_urls) == 1:
+                url, platform = validated_urls[0]
+
+                # Show "fetching" message
+                progress_embed = discord.Embed(
+                    title="⏳ Fetching Metrics...",
+                    description=f"Scraping `{url[:60]}`...\nThis may take 30-60 seconds.",
+                    color=discord.Color.yellow(),
+                )
+                try:
+                    progress_msg = await interaction.followup.send(
+                        embed=progress_embed, ephemeral=True
+                    )
+                except Exception:
+                    return
+
+                result = await self._process_and_save_single(
+                    url, platform, campaign, user_id, campaign_id
+                )
+
+                if result.get("_skip_reason"):
+                    # Validation failed — show error
+                    final_embed = discord.Embed(
+                        title="❌ Submission Failed",
+                        description=result["_skip_reason"],
+                        color=discord.Color.red(),
+                    )
+                else:
+                    views = result.get("views", 0)
+                    likes = result.get("likes", 0)
+                    comments = result.get("comments", 0)
+                    est = " (estimated)" if result.get("estimated") else ""
+                    final_embed = discord.Embed(
+                        title="✅ Video Submitted",
+                        description=f"🔗 `{url[:55]}`",
+                        color=discord.Color.green(),
+                    )
+                    final_embed.add_field(
+                        name="📊 Metrics",
+                        value=(
+                            f"👁️ {views:,} views{est}\n"
+                            f"❤️ {likes:,} likes\n"
+                            f"💬 {comments:,} comments"
+                        ),
+                        inline=False,
+                    )
+                    final_embed.set_footer(text=f"Campaign: {campaign_id}")
+
+                try:
+                    await progress_msg.edit(embed=final_embed)
+                except discord.errors.NotFound:
+                    pass
+                return
+
+            # ── MULTIPLE VIDEOS — bulk flow with live progress ──
+            total = len(validated_urls)
+            results = []  # list of (url, result_dict)
+
+            # Build initial progress embed
+            status_lines = []
+            for k, (u, _p) in enumerate(validated_urls):
+                status_lines.append(f"  ⬜ {k+1}. `{u[:45]}` — waiting...")
+
+            progress_embed = discord.Embed(
+                title=f"⏳ Processing 0/{total} videos...",
+                description="\n".join(status_lines),
+                color=discord.Color.yellow(),
+            )
+            if invalid_urls:
+                invalid_list = "\n".join([f"  ❌ `{u[:50]}`" for u in invalid_urls[:5]])
+                progress_embed.add_field(
+                    name="Invalid URLs (skipped)", value=invalid_list, inline=False
+                )
+
             try:
-                video_data = await self.scraper.get_video_metrics(norm_url, platform=platform)
-            except Exception as e:
-                results.append(f"❌ `{url[:30]}...` — Scrape failed ({str(e)[:50]})")
-                continue
+                progress_msg = await interaction.followup.send(
+                    embed=progress_embed, ephemeral=True
+                )
+            except Exception:
+                return
 
-            if not video_data:
-                results.append(f"❌ `{url[:30]}...` — Scrape failed")
-                continue
+            # Process each video through queue
+            for i, (url, platform) in enumerate(validated_urls):
+                # Update progress BEFORE processing this video
+                status_lines = []
+                for j, (prev_url, prev_result) in enumerate(results):
+                    if prev_result.get("_skip_reason") or prev_result.get("error"):
+                        reason = prev_result.get("_skip_reason", prev_result.get("error", "failed"))
+                        status_lines.append(
+                            f"  ❌ {j+1}. `{prev_url[:45]}` — {str(reason)[:30]}"
+                        )
+                    else:
+                        views = prev_result.get("views", 0)
+                        likes = prev_result.get("likes", 0)
+                        icon = "⚠️" if prev_result.get("estimated") else "✅"
+                        status_lines.append(
+                            f"  {icon} {j+1}. `{prev_url[:45]}` — {views:,} views, {likes:,} likes"
+                        )
 
-            # Check 24-hour validity
-            validity = check_video_validity(video_data.get('posted_at'))
-            if not validity['valid']:
-                results.append(f"❌ `{url[:30]}...` — Posted >24h ago")
-                continue
+                status_lines.append(f"  ⏳ {i+1}. `{url[:45]}` — fetching...")
 
-            # Verify ownership — check against ALL linked accounts for this platform
-            author = video_data.get('author_username', '').lower().strip()
-            linked_usernames = [a['platform_username'].lower().strip() for a in platform_accounts]
-            matched_account = None
-            if author:
-                for acc in platform_accounts:
-                    if acc['platform_username'].lower().strip() == author:
-                        matched_account = acc
-                        break
-                if not matched_account:
-                    results.append(f"❌ `{url[:30]}...` — Posted by @{author}, not your linked account(s)")
-                    continue
-            else:
-                matched_account = platform_accounts[0]  # fallback to first account if author unknown
-            
-            linked_username = matched_account['platform_username']
+                for k in range(i + 1, total):
+                    remaining_url = validated_urls[k][0]
+                    status_lines.append(f"  ⬜ {k+1}. `{remaining_url[:45]}` — waiting...")
 
-            # Save to database
-            video_id_str = extract_video_id(norm_url, platform)
-            record_id = await self.db.submit_video(
-                campaign_id=campaign_id,
-                discord_user_id=user_id,
-                platform=platform,
-                video_url=norm_url,
-                video_id=video_id_str,
-                author_username=video_data.get('author_username', linked_username),
-                caption=video_data.get('caption', ''),
-                is_verified=True,
-                posted_at=video_data.get('posted_at'),
-                tracking_expires_at=validity.get('expires_at')
+                progress_embed = discord.Embed(
+                    title=f"⏳ Processing {i+1}/{total} videos...",
+                    description="\n".join(status_lines),
+                    color=discord.Color.yellow(),
+                )
+                try:
+                    await progress_msg.edit(embed=progress_embed)
+                except discord.errors.NotFound:
+                    pass
+
+                # Process this video
+                result = await self._process_and_save_single(
+                    url, platform, campaign, user_id, campaign_id
+                )
+                results.append((url, result))
+
+                # Small delay before updating message (avoid Discord rate limit)
+                await asyncio.sleep(1)
+
+            # ── FINAL RESULT — summary embed ───────────────
+            success_count = sum(
+                1 for _, r in results
+                if not r.get("_skip_reason") and not r.get("error") and not r.get("estimated")
+            )
+            estimated_count = sum(
+                1 for _, r in results
+                if r.get("estimated") and not r.get("_skip_reason") and not r.get("error")
+            )
+            failed_count = sum(
+                1 for _, r in results if r.get("_skip_reason") or r.get("error")
+            )
+            total_views = sum(
+                r.get("views", 0) for _, r in results if not r.get("_skip_reason")
+            )
+            total_likes = sum(
+                r.get("likes", 0) for _, r in results if not r.get("_skip_reason")
             )
 
-            if record_id:
-                # Save initial metrics
-                await self.db.save_metric_snapshot(
-                    video_id=record_id,
-                    views=video_data.get('views', 0),
-                    likes=video_data.get('likes', 0),
-                    comments=video_data.get('comments', 0),
-                    shares=video_data.get('shares', 0),
-                    extra_data=str(video_data.get('bookmarks', '')) if platform == 'twitter' else video_data.get('title', '')
+            final_lines = []
+            for j, (url, result) in enumerate(results):
+                if result.get("_skip_reason"):
+                    final_lines.append(
+                        f"❌ {j+1}. `{url[:45]}`\n"
+                        f"    {result['_skip_reason'][:60]}"
+                    )
+                elif result.get("error"):
+                    final_lines.append(
+                        f"❌ {j+1}. `{url[:45]}`\n"
+                        f"    Error: {str(result['error'])[:50]}"
+                    )
+                else:
+                    views = result.get("views", 0)
+                    likes = result.get("likes", 0)
+                    comments = result.get("comments", 0)
+                    icon = "⚠️" if result.get("estimated") else "✅"
+                    est_text = " (estimated)" if result.get("estimated") else ""
+                    final_lines.append(
+                        f"{icon} {j+1}. `{url[:45]}`\n"
+                        f"    👁️ {views:,} views{est_text} | ❤️ {likes:,} | 💬 {comments:,}"
+                    )
+
+            final_embed = discord.Embed(
+                title="📋 Bulk Submission Complete",
+                description="\n\n".join(final_lines),
+                color=discord.Color.green() if failed_count == 0 else discord.Color.yellow(),
+            )
+            final_embed.add_field(
+                name="📊 Summary",
+                value=(
+                    f"✅ Successful: {success_count}\n"
+                    f"⚠️ Estimated: {estimated_count}\n"
+                    f"❌ Failed: {failed_count}\n"
+                    f"👁️ Total Views: {total_views:,}\n"
+                    f"❤️ Total Likes: {total_likes:,}"
+                ),
+                inline=False,
+            )
+            if invalid_urls:
+                final_embed.add_field(
+                    name="⚠️ Invalid URLs (skipped)",
+                    value="\n".join([f"• `{u[:50]}`" for u in invalid_urls[:5]]),
+                    inline=False,
                 )
-                results.append(f"✅ `{url[:30]}...` — Submitted{dup_notice}")
-            else:
-                results.append(f"❌ `{url[:30]}...` — DB Error")
+            final_embed.set_footer(
+                text=f"Campaign: {campaign_id} | Submitted by {interaction.user.display_name}"
+            )
 
-            # Delay to save credits/avoid rate limit
-            if i < len(urls) - 1:
-                await asyncio.sleep(2)
-
-        # Final Result Embed
-        success_count = sum(1 for r in results if r.startswith("✅"))
-        fail_count = len(results) - success_count
-        
-        final_embed = discord.Embed(
-            title="📋 Bulk Submission Results",
-            description="\n".join(results),
-            color=discord.Color.green() if success_count > 0 else discord.Color.red()
-        )
-        final_embed.set_footer(text=f"📊 Result: {success_count} submitted, {fail_count} failed")
-        
-        try:
-            await progress_msg.edit(embed=final_embed)
-        except:
-            pass
-
-        # Notifications (only if successful)
-        if success_count > 0:
-            channel_id = await self.db.get_setting("notification_channel_id")
-            if channel_id:
+            try:
+                await progress_msg.edit(embed=final_embed)
+            except discord.errors.NotFound:
                 try:
-                    channel = self.bot.get_channel(int(channel_id))
-                    if channel:
-                        await channel.send(embed=discord.Embed(
-                            title="📹 Bulk Submission",
-                            description=f"<@{user_id}> submitted **{success_count}** videos to **{campaign['name']}**",
-                            color=discord.Color.blue()
-                        ))
-                except: pass
+                    await interaction.followup.send(embed=final_embed)
+                except Exception:
+                    pass
+
+            # Notification
+            actual_success = success_count + estimated_count
+            if actual_success > 0:
+                channel_id = await self.db.get_setting("notification_channel_id")
+                if channel_id:
+                    try:
+                        channel = self.bot.get_channel(int(channel_id))
+                        if channel:
+                            await channel.send(
+                                embed=discord.Embed(
+                                    title="📹 Bulk Submission",
+                                    description=(
+                                        f"<@{user_id}> submitted **{actual_success}** "
+                                        f"videos to **{campaign['name']}**"
+                                    ),
+                                    color=discord.Color.blue(),
+                                )
+                            )
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            try:
+                await interaction.followup.send(
+                    f"❌ Error during submission: {str(e)[:200]}", ephemeral=True
+                )
+            except Exception:
+                pass
+
+    async def _process_and_save_single(
+        self, url: str, platform: str, campaign: dict, user_id: str, campaign_id: str
+    ) -> dict:
+        """
+        Validate ownership, scrape via queue, and save to DB for one URL.
+        Returns the metrics dict. If validation fails, returns dict with '_skip_reason'.
+        """
+        # Check platform compatibility
+        campaign_platforms = campaign.get("platforms", "all")
+        if campaign_platforms != "all" and platform != campaign_platforms:
+            return {"_skip_reason": f"Wrong platform (only {campaign_platforms})"}
+
+        # Check linked account(s)
+        accounts = await self.db.get_user_accounts(user_id)
+        platform_accounts = [
+            a for a in accounts if a["platform"] == platform and a.get("verified")
+        ]
+
+        if not platform_accounts:
+            unverified = [
+                a for a in accounts if a["platform"] == platform and not a.get("verified")
+            ]
+            if unverified:
+                return {
+                    "_skip_reason": f"Account @{unverified[0]['platform_username']} is NOT verified"
+                }
+            return {"_skip_reason": f"Link {platform.title()} first"}
+
+        # Check duplicates
+        existing = await self.db.get_submitted_video_by_url(campaign_id, url)
+        if existing:
+            return {"_skip_reason": "Already submitted here"}
+
+        # Scrape via queue (high priority)
+        try:
+            video_data = await self.bot.scrape_queue.submit_and_wait(
+                video_url=url,
+                discord_user_id=user_id,
+                campaign_id=campaign_id,
+            )
+        except Exception as e:
+            return {"_skip_reason": f"Scrape failed ({str(e)[:50]})"}
+
+        if not video_data:
+            return {"_skip_reason": "Scrape failed"}
+
+        # 24-hour validity
+        validity = check_video_validity(video_data.get("posted_at"))
+        if not validity["valid"]:
+            return {"_skip_reason": "Posted >24h ago"}
+
+        # Verify ownership
+        author = video_data.get("author_username", "").lower().strip()
+        matched_account = None
+        if author:
+            for acc in platform_accounts:
+                if acc["platform_username"].lower().strip() == author:
+                    matched_account = acc
+                    break
+            if not matched_account:
+                return {
+                    "_skip_reason": f"Posted by @{author}, not your linked account(s)"
+                }
+        else:
+            matched_account = platform_accounts[0]
+
+        linked_username = matched_account["platform_username"]
+
+        # Save to database
+        video_id_str = extract_video_id(url, platform)
+        record_id = await self.db.submit_video(
+            campaign_id=campaign_id,
+            discord_user_id=user_id,
+            platform=platform,
+            video_url=url,
+            video_id=video_id_str,
+            author_username=video_data.get("author_username", linked_username),
+            caption=video_data.get("caption", ""),
+            is_verified=True,
+            posted_at=video_data.get("posted_at"),
+            tracking_expires_at=validity.get("expires_at"),
+        )
+
+        if record_id:
+            await self.db.save_metric_snapshot(
+                video_id=record_id,
+                views=video_data.get("views", 0),
+                likes=video_data.get("likes", 0),
+                comments=video_data.get("comments", 0),
+                shares=video_data.get("shares", 0),
+                extra_data=(
+                    str(video_data.get("bookmarks", ""))
+                    if platform == "twitter"
+                    else video_data.get("title", "")
+                ),
+            )
+            return video_data
+        else:
+            return {"_skip_reason": "DB Error"}
 
     @submit.error
     async def submit_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
