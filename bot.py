@@ -65,7 +65,7 @@ class CampaignBot(commands.Bot):
 
         # Initialize database
         await init_database(DATABASE_PATH)
-        print("✅ Database initialized")
+        print("Database initialized")
 
         # Initialize Apify tables (fixes missing columns)
         from services.apify_instagram import ApifyInstagramService
@@ -84,6 +84,7 @@ class CampaignBot(commands.Bot):
         # Run database migrations for queue system columns
         await queue_db.run_migrations()
         print("[BOT] Database migrations applied")
+
 
         # Proactively start fetching proxies in the background
         from anti_detection.proxy_rotator import ProxyRotator
@@ -107,12 +108,17 @@ class CampaignBot(commands.Bot):
             "cogs.help_commands",
         ]
 
+
         for cog in cog_modules:
             try:
                 await self.load_extension(cog)
                 print(f"  ✅ Loaded: {cog}")
             except Exception as e:
                 print(f"  ❌ Failed: {cog} — {e}")
+                import traceback
+                traceback.print_exc()
+
+
 
         # Load background tasks
         task_modules = [

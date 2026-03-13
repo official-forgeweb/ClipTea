@@ -15,6 +15,7 @@ Architecture:
 
   RETRY QUEUE (after main queue drains)
     → 5-minute cooldown → 60-90 s between retries → max 3 attempts
+    → On final attempt: save best available data (parsed description or estimation)
 """
 
 import asyncio
@@ -49,6 +50,9 @@ class ScrapeJob:
     # Signalling — callers can await this to get the result
     result_event: Optional[asyncio.Event] = field(compare=False, default=None, repr=False)
     result_data: Optional[dict] = field(compare=False, default=None, repr=False)
+
+    # Stores parsed data between retries (e.g. likes from description)
+    partial_result: Optional[dict] = field(compare=False, default=None, repr=False)
 
 
 class ScrapeQueue:
@@ -228,7 +232,7 @@ class ScrapeQueue:
                 try:
                     job = self._queue.get_nowait()
                 except asyncio.QueueEmpty:
-                    # If retry queue has items and cooldown elapsed, process retries
+                    # If retry queue has items, process retries with cooldown
                     if self.retry_queue:
                         await self._process_retry_queue()
                     else:
@@ -236,37 +240,40 @@ class ScrapeQueue:
                     continue
 
                 async with self._lock:
-                    result = await self._process_single_job(job)
-
-                # Signal waiting callers
-                if job.result_event:
-                    job.result_data = result
-                    job.result_event.set()
-
-                # Save metrics to DB for periodic jobs (no caller waiting)
-                if not job.result_event and result and not result.get("error"):
-                    await self._save_periodic_result(job, result)
+                    await self._process_single_job(job)
 
                 self._jobs_processed += 1
 
                 # Inter-job delay
                 delay = self._get_delay()
                 print(f"[QUEUE] Waiting {delay:.1f}s before next job "
-                      f"(backoff={self._consecutive_errors}, queue={self._queue.qsize()})")
+                      f"(backoff={self._consecutive_errors}, "
+                      f"queue={self._queue.qsize()}, "
+                      f"retry={len(self.retry_queue)})")
                 await asyncio.sleep(delay)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[QUEUE] Processor error: {e}")
+                import traceback
+                traceback.print_exc()
                 await asyncio.sleep(5)
 
         print("[QUEUE] Processor loop exited")
 
-    async def _process_single_job(self, job: ScrapeJob) -> dict:
-        """Process one job: call Apify, detect restrictions, handle backoff."""
+    async def _process_single_job(self, job: ScrapeJob):
+        """
+        Process one job: call Apify, detect restrictions, handle backoff.
+        
+        CRITICAL: Does NOT save or signal on restricted responses —
+        adds to retry queue instead. Only saves/signals on:
+        - Full success (real views)
+        - Max retries exhausted (best available data)
+        """
         self._last_request_time = time.time()
-        print(f"[QUEUE] Processing: {job.video_url[:60]} (attempt {job.attempt + 1}/{job.max_attempts})")
+        print(f"[QUEUE] Processing: {job.video_url[:60]} "
+              f"(attempt {job.attempt + 1}/{job.max_attempts})")
 
         try:
             result = await self.apify.get_video_metrics(job.video_url, use_cache=False)
@@ -277,86 +284,173 @@ class ScrapeQueue:
         if not result:
             result = {"error": "No response from Apify", "views": 0, "likes": 0, "comments": 0}
 
-        # ── Restriction / error detection ──────────────
+        # ═══ CLASSIFY THE RESULT ═══
         is_restricted = False
-        has_error = bool(result.get("error"))
+        has_error = False
 
-        if result:
-            error_text = str(result.get("error", "")).lower()
-            error_desc = str(result.get("errorDescription", "")).lower()
+        # Check 1: Explicit restricted_page error
+        error_text = str(result.get("error", "")).lower()
+        if "restricted" in error_text or result.get("restricted"):
+            is_restricted = True
 
-            if "restricted" in error_text or "restricted" in error_desc:
-                is_restricted = True
+        # Check 2: Got response but views=0 AND likes=0 with no error
+        #           (Apify returned empty data — treat as restriction)
+        if (not result.get("error") and
+            result.get("views", 0) == 0 and
+            result.get("likes", 0) == 0 and
+            result.get("method") not in ("estimation", "cache", "queue_timeout")):
+            is_restricted = True
 
-            # Got a response but zero metrics with author → partial / restricted
-            if (result.get("views", 0) == 0 and result.get("likes", 0) == 0
-                    and result.get("author_username") and not has_error):
-                is_restricted = True
+        # Check 3: Non-restriction error
+        if result.get("error") and not is_restricted:
+            has_error = True
 
-        if is_restricted or has_error:
+        # ═══ HANDLE BASED ON CLASSIFICATION ═══
+
+        if not is_restricted and not has_error and (
+            result.get("views", 0) > 0 or result.get("likes", 0) > 0
+        ):
+            # ─── SUCCESS ───
+            if not result.get("estimated") and result.get("views", 0) > 0:
+                # FULL success — got real views
+                print(f"[QUEUE] ✅ Full success: views={result['views']}, "
+                      f"likes={result.get('likes', 0)}")
+                self._jobs_succeeded += 1
+                self._decrease_backoff()
+            else:
+                # Has parsed data (real likes, estimated views)
+                # Try again for real views if retries remain
+                if job.attempt < job.max_attempts - 1:
+                    print(f"[QUEUE] ⚠️ Got estimated data (likes={result.get('likes', 0)}), "
+                          f"retrying for real views "
+                          f"(attempt {job.attempt + 1}/{job.max_attempts})")
+                    self._increase_backoff()
+                    job.attempt += 1
+                    job.partial_result = result
+                    self.retry_queue.append(job)
+                    # DON'T save, DON'T signal — wait for retry
+                    return
+                else:
+                    # Last attempt — save estimated data
+                    print(f"[QUEUE] ⚠️ Final attempt, saving estimated data: "
+                          f"views≈{result.get('views', 0)}, "
+                          f"likes={result.get('likes', 0)}(real)")
+                    self._jobs_succeeded += 1
+
+            # Save + signal
+            await self._finalize_job(job, result)
+
+        elif is_restricted:
+            # ─── RESTRICTED ───
             self._increase_backoff()
             job.attempt += 1
 
+            # Save any parsed data from this attempt
+            if result.get("likes", 0) > 0:
+                job.partial_result = result
+
             if job.attempt < job.max_attempts:
+                print(f"[QUEUE] 🔄 Restricted, added to retry queue "
+                      f"(attempt {job.attempt}/{job.max_attempts})")
                 self.retry_queue.append(job)
-                print(f"[QUEUE] ⚠️ {'Restricted' if is_restricted else 'Error'} — "
-                      f"added to retry queue (attempt {job.attempt}/{job.max_attempts})")
+                # DON'T save to DB, DON'T signal caller — will retry
             else:
-                # Max retries exhausted — use estimation fallback
+                # Max retries exhausted
                 print(f"[QUEUE] ❌ Max retries exhausted for {job.video_url[:50]}")
-                shortcode = self.apify._extract_shortcode(job.video_url)
-                fallback = await self.apify._estimation_fallback(job.video_url, shortcode)
                 self._jobs_failed += 1
 
-                # Update DB error info
+                # Use best available: partial_result > current result > estimation
+                final_result = job.partial_result or result
+                if final_result.get("views", 0) == 0 and final_result.get("likes", 0) == 0:
+                    shortcode = self.apify._extract_shortcode(job.video_url)
+                    final_result = await self.apify._estimation_fallback(
+                        job.video_url, shortcode
+                    )
+
                 await self._update_video_error(job, "max_retries_exhausted")
-                return fallback
+                await self._finalize_job(job, final_result)
 
-            self._jobs_failed += 1
-            return result
         else:
-            # Success
-            self._decrease_backoff()
-            self._jobs_succeeded += 1
+            # ─── OTHER ERROR ───
+            job.attempt += 1
+            self._increase_backoff()
 
-            # Update last_scraped_at in DB
+            if job.attempt < job.max_attempts:
+                print(f"[QUEUE] 🔄 Error: {error_text[:50]}, retry queue "
+                      f"(attempt {job.attempt}/{job.max_attempts})")
+                self.retry_queue.append(job)
+            else:
+                print(f"[QUEUE] ❌ Max retries for {job.video_url[:50]}: {error_text[:50]}")
+                self._jobs_failed += 1
+
+                # Use partial or estimation fallback
+                final_result = job.partial_result
+                if not final_result or (
+                    final_result.get("views", 0) == 0 and
+                    final_result.get("likes", 0) == 0
+                ):
+                    shortcode = self.apify._extract_shortcode(job.video_url)
+                    final_result = await self.apify._estimation_fallback(
+                        job.video_url, shortcode
+                    )
+
+                await self._update_video_error(job, error_text[:100])
+                await self._finalize_job(job, final_result)
+
+    async def _finalize_job(self, job: ScrapeJob, result: dict):
+        """Save result to DB and signal waiting callers."""
+        # Signal waiting callers (/submit)
+        if job.result_event:
+            job.result_data = result
+            job.result_event.set()
+
+        # Save metrics for periodic jobs (no caller waiting)
+        if not job.result_event and result and not result.get("error"):
+            await self._save_periodic_result(job, result)
+        elif not job.result_event and result:
+            # Even with error, save if we have usable data
+            if result.get("views", 0) > 0 or result.get("likes", 0) > 0:
+                await self._save_periodic_result(job, result)
+
+        # Update last_scraped_at
+        if not result.get("error") or result.get("views", 0) > 0:
             await self._update_last_scraped(job)
-
-            return result
 
     async def _process_retry_queue(self):
         """Process all retry jobs with longer delays after a cooldown."""
         if not self.retry_queue:
             return
 
-        print(f"[QUEUE] Retry cooldown: waiting {self._retry_cooldown}s before processing "
-              f"{len(self.retry_queue)} retry jobs...")
+        retry_count = len(self.retry_queue)
+        print(f"[QUEUE] 🔄 {retry_count} videos in retry queue. "
+              f"Cooling down {self._retry_cooldown}s before retrying...")
         await asyncio.sleep(self._retry_cooldown)
 
         # Take a snapshot so new retries added during processing wait for next cycle
         jobs_to_retry = list(self.retry_queue)
         self.retry_queue.clear()
 
+        print(f"[QUEUE] 🔄 Starting retry processing ({len(jobs_to_retry)} videos)...")
+
         for job in jobs_to_retry:
             if not self._running:
                 break
 
             async with self._lock:
-                result = await self._process_single_job(job)
-
-            if job.result_event:
-                job.result_data = result
-                job.result_event.set()
-
-            if not job.result_event and result and not result.get("error"):
-                await self._save_periodic_result(job, result)
+                await self._process_single_job(job)
 
             self._jobs_processed += 1
 
             # Retry delay is longer: 60-90 seconds
             delay = random.uniform(60, 90)
-            print(f"[QUEUE] Retry delay: {delay:.1f}s")
+            print(f"[QUEUE] Retry delay: {delay:.1f}s "
+                  f"(remaining retries: {len(self.retry_queue)})")
             await asyncio.sleep(delay)
+
+        print("[QUEUE] 🔄 Retry queue processing complete")
+
+        # Reset backoff after full retry cycle
+        self._reset_backoff()
 
     # ── Backoff management ─────────────────────────────
 
@@ -433,8 +527,9 @@ class ScrapeQueue:
                     comments=result.get("comments", 0),
                     shares=result.get("shares", 0),
                 )
+                est_marker = " (estimated)" if result.get("estimated") else ""
                 print(f"[QUEUE] 💾 Saved periodic result for {job.video_url[:50]} "
-                      f"(views={result.get('views', 0)})")
+                      f"(views={result.get('views', 0)}{est_marker})")
         except Exception as e:
             print(f"[QUEUE] DB save error: {e}")
 

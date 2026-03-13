@@ -15,6 +15,7 @@ import logging
 import json
 import httpx
 from typing import Optional, List
+import config
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ class IGBioVerifier:
     def __init__(self, proxy_rotator=None, timeout: float = 45.0):
         self.proxy_rotator = proxy_rotator
         self.timeout = timeout
-        self.apify_token = os.getenv("APIFY_TOKEN", "")
+        self.apify_token = config.PRIMARY_APIFY_TOKEN
+
 
     async def check_bio(self, username: str, code: str) -> bool:
         """

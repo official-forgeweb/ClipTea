@@ -1000,6 +1000,27 @@ class AdminCommands(commands.Cog):
             inline=True
         )
 
+        # ── Token Rotation Stats ──
+        if hasattr(queue, 'apify') and hasattr(queue.apify, 'token_rotator'):
+            token_stats = queue.apify.token_rotator.get_all_stats()
+            if token_stats:
+                token_lines = []
+                for ts in token_stats:
+                    status = "✅ Ready"
+                    if ts['cooldown'] != "None":
+                        status = f"⏳ Cooling ({ts['cooldown']})"
+                    
+                    token_lines.append(
+                        f"**{ts['name']}**: Sucl: {ts['success_rate']} │ Fail: {ts['errors'] + ts['restrictions']} │ {status}"
+                    )
+                
+                if token_lines:
+                    embed.add_field(
+                        name="🔑 Apify Token Rotation",
+                        value="\n".join(token_lines),
+                        inline=False
+                    )
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 

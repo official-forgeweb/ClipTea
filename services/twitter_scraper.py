@@ -13,7 +13,12 @@ class TwitterApifyService:
     BASE_URL = "https://api.apify.com/v2"
     
     def __init__(self, db_path=None):
-        self.token = os.getenv("APIFY_TOKEN", "")
+        try:
+            import config
+            self.token = config.PRIMARY_APIFY_TOKEN
+        except ImportError:
+            self.token = os.getenv("APIFY_TOKEN", "")
+
         actor_id_raw = os.getenv("TWITTER_ACTOR_ID", "apidojo/tweet-scraper")
         self.actor_id = actor_id_raw.replace("/", "~")
         self.cache_duration_minutes = 120

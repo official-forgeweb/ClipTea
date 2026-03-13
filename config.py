@@ -10,6 +10,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 # Database Path
 DATABASE_PATH = "campaign_data.db"
 
+# Multiple Apify tokens for rotation (comma-separated)
+APIFY_TOKENS = os.getenv("APIFY_TOKENS") or os.getenv("APIFY_TOKEN") or ""
+# Primary token for simple non-rotated calls
+PRIMARY_APIFY_TOKEN = [t.strip() for t in APIFY_TOKENS.split(",") if t.strip()][0] if APIFY_TOKENS else ""
+
+
 # Server lock
 ALLOWED_GUILD_IDS = [
     g.strip() for g in os.getenv("ALLOWED_GUILD_IDS", "").split(",") 

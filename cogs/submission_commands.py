@@ -214,7 +214,12 @@ class SubmissionCommands(commands.Cog):
                     views = result.get("views", 0)
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
-                    est = " (estimated)" if result.get("estimated") else ""
+                    
+                    # Determine indicators
+                    v_icon = "⚠️ ~" if result.get("estimated") else "✅ "
+                    l_icon = "✅ " if result.get("likes_real") else ""
+                    c_icon = "✅ " if result.get("comments_real") else ""
+                    
                     final_embed = discord.Embed(
                         title="✅ Video Submitted",
                         description=f"🔗 `{url[:55]}`",
@@ -223,13 +228,23 @@ class SubmissionCommands(commands.Cog):
                     final_embed.add_field(
                         name="📊 Metrics",
                         value=(
-                            f"👁️ {views:,} views{est}\n"
-                            f"❤️ {likes:,} likes\n"
-                            f"💬 {comments:,} comments"
+                            f"👁️ {v_icon}{views:,} views\n"
+                            f"❤️ {l_icon}{likes:,} likes\n"
+                            f"💬 {c_icon}{comments:,} comments"
                         ),
                         inline=False,
                     )
-                    final_embed.set_footer(text=f"Campaign: {campaign_id}")
+                    
+                    # Data source footer
+                    footer = f"Campaign: {campaign_id}"
+                    if result.get("method") == "apify_restricted_parsed":
+                        footer += " | Data: Real likes/comments from IG (estimated views)"
+                    elif result.get("estimated"):
+                        footer += " | Data: Estimated views/likes"
+                    else:
+                        footer += " | Data: Real-time from Instagram API ✅"
+                        
+                    final_embed.set_footer(text=footer)
 
                 try:
                     await progress_msg.edit(embed=final_embed)
@@ -342,11 +357,13 @@ class SubmissionCommands(commands.Cog):
                     views = result.get("views", 0)
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
-                    icon = "⚠️" if result.get("estimated") else "✅"
-                    est_text = " (estimated)" if result.get("estimated") else ""
+                    
+                    v_icon = "⚠️ ~" if result.get("estimated") else "✅ "
+                    l_icon = "✅ " if result.get("likes_real") else ""
+                    
                     final_lines.append(
-                        f"{icon} {j+1}. `{url[:45]}`\n"
-                        f"    👁️ {views:,} views{est_text} | ❤️ {likes:,} | 💬 {comments:,}"
+                        f"{v_icon} {j+1}. `{url[:45]}`\n"
+                        f"    👁️ {views:,} | ❤️ {l_icon}{likes:,} | 💬 {comments:,}"
                     )
 
             final_embed = discord.Embed(

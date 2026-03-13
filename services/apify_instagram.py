@@ -17,10 +17,19 @@ class ApifyInstagramService:
     BASE_URL = "https://api.apify.com/v2"
     
     def __init__(self, db_path=None):
-        self.token = os.getenv("APIFY_TOKEN", "")
+        try:
+            import config
+            self.token = config.PRIMARY_APIFY_TOKEN
+        except ImportError:
+            self.token = os.getenv("APIFY_TOKEN", "")
+
         actor_id_raw = os.getenv("APIFY_ACTOR_ID", "apify/instagram-post-scraper")
         self.actor_id = actor_id_raw.replace("/", "~")
         self.cache_duration_minutes = 120
+        
+        # Token rotation for multiple Apify accounts
+        from services.apify_token_rotator import ApifyTokenRotator
+        self.token_rotator = ApifyTokenRotator()
         
         # Handle different types of db_path input
         if db_path is None:
@@ -167,19 +176,22 @@ class ApifyInstagramService:
     async def _call_apify(self, video_url: str, shortcode: str) -> Optional[dict]:
         """
         Call Apify API to scrape Instagram post.
-        Uses the run-sync-get-dataset-items endpoint.
+        Uses the run-sync-get-dataset-items endpoint with token rotation.
         """
+        # Get token from rotator (falls back to single token)
+        token = self.token_rotator.get_next_token()
+        if not token:
+            token = self.token
+        if not token:
+            return {"error": "No Apify tokens configured"}
+
         # BUILD THE CORRECT URL
-        # Actor ID must use TILDE: apify~instagram-post-scraper
         url = (
             f"{self.BASE_URL}/acts/{self.actor_id}"
             f"/run-sync-get-dataset-items"
-            f"?token={self.token}"
+            f"?token={token}"
         )
         
-        # Request body — the input for the scraper
-        # NOTE: apify/instagram-post-scraper requires "username" field
-        # (it accepts URLs in this field despite the confusing name)
         payload = {
             "username": [video_url],
             "resultsLimit": 1
@@ -190,7 +202,7 @@ class ApifyInstagramService:
         }
         
         try:
-            timeout = aiohttp.ClientTimeout(total=120)  # 120 second max
+            timeout = aiohttp.ClientTimeout(total=120)
             
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 print(f"[REEL] Calling: {self.BASE_URL}/acts/{self.actor_id}/run-sync-get-dataset-items")
@@ -201,20 +213,25 @@ class ApifyInstagramService:
                     
                     if resp.status != 200 and resp.status != 201:
                         print(f"[Apify] API Error: {resp.status} - {response_text[:500]}")
+                        if resp.status == 401:
+                            self.token_rotator.report_invalid(token)
+                        else:
+                            self.token_rotator.report_error(token)
                         return {"error": f"Apify returned status {resp.status}"}
+
                     
                     # Parse response
                     try:
                         data = json.loads(response_text)
                     except json.JSONDecodeError:
                         print(f"[Apify] Invalid JSON response: {response_text[:500]}")
+                        self.token_rotator.report_error(token)
                         return {"error": "Invalid response from Apify"}
                     
                     # Response is an array of items
                     if isinstance(data, list) and len(data) > 0:
                         item = data[0]
                     elif isinstance(data, dict):
-                        # Sometimes response is wrapped in a dict
                         items = data.get("items", data.get("data", []))
                         if isinstance(items, list) and len(items) > 0:
                             item = items[0]
@@ -222,21 +239,37 @@ class ApifyInstagramService:
                             item = data
                     else:
                         print(f"[Apify] Unexpected response format: {response_text[:500]}")
+                        self.token_rotator.report_error(token)
                         return {"error": "Unexpected response format"}
                     
                     # Extract metrics from item
                     print(f"[REEL] RAW KEYS: {list(item.keys())}")
                     print(f"[REEL] RAW DATA: {json.dumps(item, indent=2, default=str)[:3000]}")
-                    return self._parse_apify_response(item)
+                    result = self._parse_apify_response(item)
+                    
+                    # Report to token rotator based on result
+                    if result.get("error") == "restricted_page" or result.get("restricted"):
+                        self.token_rotator.report_restriction(token)
+                    elif result.get("views", 0) > 0 or (
+                        result.get("likes", 0) > 0 and not result.get("estimated")
+                    ):
+                        self.token_rotator.report_success(token)
+                    else:
+                        self.token_rotator.report_error(token)
+                    
+                    return result
         
         except asyncio.TimeoutError:
             print("[Apify] Request timed out (120 seconds)")
+            self.token_rotator.report_error(token)
             return {"error": "Apify request timed out"}
         except aiohttp.ClientError as e:
             print(f"[Apify] Connection error: {e}")
+            self.token_rotator.report_error(token)
             return {"error": f"Connection error: {str(e)}"}
         except Exception as e:
             print(f"[Apify] Unexpected error: {e}")
+            self.token_rotator.report_error(token)
             return {"error": f"Unexpected error: {str(e)}"}
     
     def _parse_apify_response(self, item: dict) -> dict:
@@ -250,30 +283,81 @@ class ApifyInstagramService:
         error_desc = str(item.get("errorDescription", "")).lower()
 
         if "restricted" in error_val or "restricted" in error_desc:
-            # Extract whatever partial data is available
-            author = (
-                item.get("ownerUsername") or
-                item.get("owner_username") or
-                item.get("username") or ""
+            # Try to extract REAL data from the description text
+            description = str(item.get("description", ""))
+            title = str(item.get("title", ""))
+
+            likes = 0
+            comments = 0
+            author = ""
+
+            # ─── Parse description text ───
+            # Pattern: "36 likes, 1 comments - allinamerica on March 12, 2026: "
+            desc_match = re.search(
+                r'(\d[\d,]*)\s*likes?,?\s*(\d[\d,]*)\s*comments?\s*-\s*(\w+)\s+on\s+',
+                description
             )
+            if desc_match:
+                likes = int(desc_match.group(1).replace(",", ""))
+                comments = int(desc_match.group(2).replace(",", ""))
+                author = desc_match.group(3)
+                print(f"[Apify] 🔍 Parsed from description: "
+                      f"likes={likes}, comments={comments}, author=@{author}")
+            else:
+                # Try simpler patterns individually
+                likes_match = re.search(r'(\d[\d,]*)\s*likes?', description, re.IGNORECASE)
+                if likes_match:
+                    likes = int(likes_match.group(1).replace(",", ""))
+
+                comments_match = re.search(r'(\d[\d,]*)\s*comments?', description, re.IGNORECASE)
+                if comments_match:
+                    comments = int(comments_match.group(1).replace(",", ""))
+
+                # Author from description: "- username on"
+                author_match = re.search(r'-\s*(\w+)\s+on\s+', description)
+                if author_match:
+                    author = author_match.group(1)
+
+            # ─── Parse author from title as backup ───
+            # Title: "Username (@handle) • Instagram reel"
+            if not author and title:
+                title_match = re.search(r'\(@(\w+)\)', title)
+                if title_match:
+                    author = title_match.group(1)
+
+            # ─── Also try standard field names for author ───
+            if not author:
+                author = (
+                    item.get("ownerUsername") or
+                    item.get("owner_username") or
+                    item.get("username") or ""
+                )
+
+            # ─── Estimate views from likes ───
+            # Likes are typically ~4% of views on Instagram
+            estimated_views = int(likes / 0.04) if likes > 0 else 0
+
             caption = item.get("caption", "")
             if isinstance(caption, dict):
                 caption = caption.get("text", "")
 
-            print(f"[Apify] ⚠️ RESTRICTED PAGE — partial data only, author={author}")
+            print(f"[Apify] 📊 Restricted parsed: views≈{estimated_views}, "
+                  f"likes={likes}(real), comments={comments}(real), author=@{author}")
 
             return {
-                "views": 0,
-                "likes": 0,
-                "comments": 0,
+                "views": estimated_views,
+                "likes": likes,
+                "comments": comments,
                 "shares": 0,
                 "author_username": str(author),
-                "caption": str(caption or "")[:200],
-                "method": "apify_restricted",
-                "estimated": True,
+                "caption": str(caption or description or "")[:200],
+                "method": "apify_restricted_parsed",
+                "estimated": True,           # views are estimated
+                "likes_real": True,          # likes came from description (REAL)
+                "comments_real": True,       # comments came from description (REAL)
+                "restricted": True,          # flag for queue to know this was restricted
+                "error": "restricted_page",  # keep for queue retry logic
                 "cached": False,
-                "error": "restricted_page",
-                "partial_data": True,
             }
 
         # Views — check all possible field names

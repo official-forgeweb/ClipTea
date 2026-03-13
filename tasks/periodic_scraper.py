@@ -223,7 +223,45 @@ class PeriodicScraper(commands.Cog):
         except Exception:
             return True  # If we can't parse, scrape it
 
+    async def scrape_all_tracking_videos(self) -> dict:
+        """Force scrape all currently tracking videos immediately via the queue."""
+        videos = await self.db.get_all_tracking_videos()
+        if not videos:
+            return {"successful": 0, "failed": 0, "total_videos": 0, "errors": []}
+
+        queue = getattr(self.bot, 'scrape_queue', None)
+        if not queue:
+            print("[SCRAPER] ⚠️ Scrape queue not available for force update")
+            return {"successful": 0, "failed": 0, "total_videos": len(videos), "errors": ["Scrape queue not ready"]}
+
+        print(f"[SCRAPER] 🚀 Force update requested for {len(videos)} videos")
+        
+        video_urls = [v['video_url'] for v in videos]
+        
+        # We use the queue's bulk submission
+        # Note: This will WAIT for all jobs to finish.
+        results = await queue.submit_bulk_and_track(video_urls)
+
+        successful = 0
+        failed = 0
+        errors = []
+        
+        for res in results:
+            if res.get("error") and res.get("views", 0) == 0:
+                failed += 1
+                errors.append(str(res.get("error")))
+            else:
+                successful += 1
+                
+        return {
+            "successful": successful,
+            "failed": failed,
+            "total_videos": len(videos),
+            "errors": list(set(errors))[:10]  # Limit error list
+        }
+
     @periodic_scrape.before_loop
+
     async def before_scrape(self):
         """Wait for bot to be ready before starting the loop."""
         await self.bot.wait_until_ready()
