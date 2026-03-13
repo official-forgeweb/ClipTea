@@ -350,11 +350,16 @@ class ScrapeQueue:
         # Check 2: Got response but views=0 AND likes=0 with no error
         #           (Apify returned empty data — treat as restriction)
         if (not result.get("error") and
-            result.get("views", 0) == 0 and
-            result.get("likes", 0) == 0 and
+            int(result.get("views", 0) or 0) in (0, -1) and
+            int(result.get("likes", 0) or 0) in (0, -1) and
             result.get("method") not in ("estimation", "cache", "queue_timeout",
                                           "invalid_url", "embed_fallback")):
             is_restricted = True
+
+        # Check 2.1: It is partial, NOT restricted
+        is_partial = is_views_unknown and int(result.get("likes", 0) or 0) > 0
+        if is_partial:
+            is_restricted = False
 
         # Check 3: Invalid URL response from Apify
         if result.get("method") == "invalid_url":
@@ -383,24 +388,31 @@ class ScrapeQueue:
                 self._reset_backoff()  # Fully reset on success
             else:
                 # Has parsed data (real likes, views unknown)
-                # Try again for real views if retries remain
+                print(f"[QUEUE] ⚠️ Got partial data (likes={result.get('likes', 0)}, views_unknown={is_views_unknown})")
+                self._jobs_succeeded += 1 # Count as success
+                
+                # Signal caller ASAP so UI shows "views pending"
+                await self._finalize_job(job, result)
+                
+                # Spin off ONE delayed retry (30 mins) if we still have attempts
                 if job.attempt < job.max_attempts - 1:
-                    print(f"[QUEUE] ⚠️ Got partial data (likes={result.get('likes', 0)}, "
-                          f"views_unknown={is_views_unknown}), "
-                          f"retrying for real views "
-                          f"(attempt {job.attempt + 1}/{job.max_attempts})")
-                    self._increase_backoff()
-                    job.attempt += 1
-                    job.partial_result = result
-                    self.retry_queue.append(job)
-                    # DON'T save, DON'T signal — wait for retry
-                    return
-                else:
-                    # Last attempt — save what we have (views may be unknown)
-                    print(f"[QUEUE] ⚠️ Final attempt, saving available data: "
-                          f"views={result.get('views', 0)}, "
-                          f"likes={result.get('likes', 0)}")
-                    self._jobs_succeeded += 1
+                    print(f"[QUEUE] ⏳ Scheduling one 30-minute retry for partial data: {job.video_url[:50]}")
+                    async def delayed_retry():
+                        await asyncio.sleep(1800)
+                        retry_job = self._make_job(
+                            video_url=job.video_url,
+                            discord_user_id=job.discord_user_id,
+                            campaign_id=job.campaign_id,
+                            priority=PRIORITY_LOW,
+                            event=None
+                        )
+                        retry_job.attempt = job.max_attempts - 1
+                        retry_job.partial_result = result
+                        await self._queue.put(retry_job)
+                        
+                    asyncio.create_task(delayed_retry())
+                    
+                return
 
             # Save + signal
             await self._finalize_job(job, result)

@@ -366,7 +366,7 @@ class ApifyInstagramService:
         # ── Method 1: Primary actor (instagram-post-scraper) ──
         result = await self._call_apify_actor(
             actor_id=self.actor_id,
-            payload={"directUrls": [clean_url], "resultsLimit": 1},
+            payload={"username": [clean_url], "resultsLimit": 1},
             token=token,
             shortcode=shortcode,
         )
@@ -510,7 +510,7 @@ class ApifyInstagramService:
         # Views can be None (PARTIAL) or int (SUCCESS)
         has_real_views = views is not None
         if views is None:
-            views = 0
+            views = -1
 
         caption = classification.get("caption", "")
 
@@ -527,7 +527,7 @@ class ApifyInstagramService:
             "likes_real": True if likes > 0 else False,
             "comments_real": True if comments > 0 else False,
             "restricted": classification.get("type") in ("PARTIAL", "RESTRICTED"),
-            "error": "restricted_page" if classification.get("type") in ("PARTIAL", "RESTRICTED") else None,
+            "error": "restricted_page" if classification.get("type") == "RESTRICTED" else None,
             "cached": False,
             "views_unknown": not has_real_views,
         }

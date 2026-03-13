@@ -66,12 +66,18 @@ class VerifyView(discord.ui.View):
     ):
         # Only the original user may press the button
         if str(interaction.user.id) != self.discord_user_id:
-            await interaction.response.send_message(
-                "❌ This verification is not for you.", ephemeral=True
-            )
+            try:
+                await interaction.response.send_message(
+                    "❌ This verification is not for you.", ephemeral=True
+                )
+            except Exception:
+                pass
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception:
+            return
 
         # Ensure proxies are ready
         if self.proxy_rotator and not self.proxy_rotator._initialized:
@@ -152,9 +158,12 @@ class VerifyView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         if str(interaction.user.id) != self.discord_user_id:
-            await interaction.response.send_message(
-                "❌ This verification is not for you.", ephemeral=True
-            )
+            try:
+                await interaction.response.send_message(
+                    "❌ This verification is not for you.", ephemeral=True
+                )
+            except Exception:
+                pass
             return
 
         self._disable_all()
@@ -162,9 +171,13 @@ class VerifyView(discord.ui.View):
             await interaction.message.edit(view=self)
         except Exception:
             pass
-        await interaction.response.send_message(
-            "🚫 Verification cancelled.", ephemeral=True
-        )
+            
+        try:
+            await interaction.response.send_message(
+                "🚫 Verification cancelled.", ephemeral=True
+            )
+        except Exception:
+            pass
 
     def _disable_all(self):
         for child in self.children:

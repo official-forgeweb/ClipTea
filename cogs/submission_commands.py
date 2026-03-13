@@ -217,8 +217,8 @@ class SubmissionCommands(commands.Cog):
                     views_unknown = result.get("views_unknown", False)
                     
                     # Determine indicators
-                    if views_unknown:
-                        v_text = "❓ unknown"
+                    if views_unknown or views < 0:
+                        v_text = "⏳ Pending..."
                     elif result.get("estimated"):
                         v_text = f"⚠️ ~{views:,}"
                     else:
@@ -308,9 +308,14 @@ class SubmissionCommands(commands.Cog):
                     else:
                         views = prev_result.get("views", 0)
                         likes = prev_result.get("likes", 0)
-                        icon = "⚠️" if prev_result.get("estimated") else "✅"
+                        if views < 0 or prev_result.get("views_unknown"):
+                            icon = "⏳"
+                            v_str = "Pending"
+                        else:
+                            icon = "⚠️" if prev_result.get("estimated") else "✅"
+                            v_str = f"{views:,}"
                         status_lines.append(
-                            f"  {icon} {j+1}. `{prev_url[:45]}` — {views:,} views, {likes:,} likes"
+                            f"  {icon} {j+1}. `{prev_url[:45]}` — {v_str} views, {likes:,} likes"
                         )
 
                 status_lines.append(f"  ⏳ {i+1}. `{url[:45]}` — fetching...")
@@ -351,7 +356,7 @@ class SubmissionCommands(commands.Cog):
                 1 for _, r in results if r.get("_skip_reason") or r.get("error")
             )
             total_views = sum(
-                r.get("views", 0) for _, r in results if not r.get("_skip_reason")
+                max(0, r.get("views", 0)) for _, r in results if not r.get("_skip_reason")
             )
             total_likes = sum(
                 r.get("likes", 0) for _, r in results if not r.get("_skip_reason")
@@ -374,12 +379,21 @@ class SubmissionCommands(commands.Cog):
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
                     
-                    v_icon = "⚠️ ~" if result.get("estimated") else "✅ "
+                    if views < 0 or result.get("views_unknown"):
+                        v_icon = "⏳ "
+                        v_display = "Pending..."
+                    elif result.get("estimated"):
+                        v_icon = "⚠️ ~"
+                        v_display = f"{views:,}"
+                    else:
+                        v_icon = "✅ "
+                        v_display = f"{views:,}"
+                        
                     l_icon = "✅ " if result.get("likes_real") else ""
                     
                     final_lines.append(
                         f"{v_icon} {j+1}. `{url[:45]}`\n"
-                        f"    👁️ {views:,} | ❤️ {l_icon}{likes:,} | 💬 {comments:,}"
+                        f"    👁️ {v_display} | ❤️ {l_icon}{likes:,} | 💬 {comments:,}"
                     )
 
             final_embed = discord.Embed(
