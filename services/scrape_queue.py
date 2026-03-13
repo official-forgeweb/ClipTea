@@ -9,13 +9,15 @@ Architecture:
     LOW   → periodic scraper
 
   Processing: one job at a time
-    → Call Apify → success / restricted / error
-    → Random delay (scaled by backoff level)
+    → Validate URL (reject fakes BEFORE API call)
+    → Check token availability (WAIT if all cooling, never force)
+    → Call Apify → classify response
+    → Random delay (capped between 15–120 seconds)
     → Next job
 
   RETRY QUEUE (after main queue drains)
     → 5-minute cooldown → 60-90 s between retries → max 3 attempts
-    → On final attempt: save best available data (parsed description or estimation)
+    → On final attempt: save best available data
 """
 
 import asyncio
@@ -81,6 +83,7 @@ class ScrapeQueue:
         self._jobs_processed = 0
         self._jobs_succeeded = 0
         self._jobs_failed = 0
+        self._jobs_invalid = 0         # Rejected due to invalid URL
         self._last_request_time: Optional[float] = None
 
         # Control
@@ -215,6 +218,7 @@ class ScrapeQueue:
             "jobs_processed": self._jobs_processed,
             "jobs_succeeded": self._jobs_succeeded,
             "jobs_failed": self._jobs_failed,
+            "jobs_invalid": self._jobs_invalid,
             "success_rate": rate,
             "consecutive_errors": self._consecutive_errors,
             "current_delay": delay_desc,
@@ -264,17 +268,66 @@ class ScrapeQueue:
 
     async def _process_single_job(self, job: ScrapeJob):
         """
-        Process one job: call Apify, detect restrictions, handle backoff.
+        Process one job: validate URL, check token, call Apify, classify response.
         
-        CRITICAL: Does NOT save or signal on restricted responses —
-        adds to retry queue instead. Only saves/signals on:
-        - Full success (real views)
-        - Max retries exhausted (best available data)
+        Key rules:
+        - Invalid URLs are caught BEFORE any API call
+        - Token is never forced when cooling (we wait instead)
+        - INVALID_URL errors do NOT penalize token or increase backoff
+        - Backoff fully resets on success
         """
         self._last_request_time = time.time()
         print(f"[QUEUE] Processing: {job.video_url[:60]} "
               f"(attempt {job.attempt + 1}/{job.max_attempts})")
 
+        # ── STEP 1: Validate Instagram URL before API call ──
+        from services.apify_instagram import validate_instagram_url
+        from utils.platform_detector import detect_platform
+
+        platform = detect_platform(job.video_url)
+
+        if platform == "instagram":
+            validation = validate_instagram_url(job.video_url)
+            if not validation["valid"]:
+                print(f"[QUEUE] ❌ Invalid URL rejected: {job.video_url} — {validation['reason']}")
+                self._jobs_invalid += 1
+                # NO token penalty, NO backoff increase, NO retry
+                error_result = {
+                    "views": 0, "likes": 0, "comments": 0, "shares": 0,
+                    "author_username": "", "method": "invalid_url",
+                    "estimated": False, "cached": False,
+                    "error": f"Invalid URL: {validation['reason']}",
+                }
+                await self._finalize_job(job, error_result)
+                return
+
+            # Use the normalized (clean) URL
+            job.video_url = validation["clean_url"]
+            job.shortcode = validation["shortcode"]
+
+        # ── STEP 2: Check token availability — WAIT if all cooling ──
+        token = self.apify.token_rotator.get_next_token()
+        if token is None:
+            wait_time = self.apify.token_rotator.get_wait_time()
+            capped_wait = min(wait_time + 5, 120)
+            print(f"[QUEUE] ⏳ All tokens cooling. Waiting {capped_wait:.0f}s (actual cooldown: {wait_time:.0f}s)")
+            # Put job back at front of queue
+            job_copy = self._make_job(
+                video_url=job.video_url,
+                shortcode=job.shortcode,
+                discord_user_id=job.discord_user_id,
+                campaign_id=job.campaign_id,
+                priority=job.priority,
+                event=job.result_event,
+            )
+            job_copy.attempt = job.attempt
+            job_copy.partial_result = job.partial_result
+            job_copy.result_data = job.result_data
+            await self._queue.put(job_copy)
+            await asyncio.sleep(capped_wait)
+            return
+
+        # ── STEP 3: Call Apify ──
         try:
             result = await self.apify.get_video_metrics(job.video_url, use_cache=False)
         except Exception as e:
@@ -287,6 +340,7 @@ class ScrapeQueue:
         # ═══ CLASSIFY THE RESULT ═══
         is_restricted = False
         has_error = False
+        is_views_unknown = result.get("views_unknown", False)
 
         # Check 1: Explicit restricted_page error
         error_text = str(result.get("error", "")).lower()
@@ -298,10 +352,20 @@ class ScrapeQueue:
         if (not result.get("error") and
             result.get("views", 0) == 0 and
             result.get("likes", 0) == 0 and
-            result.get("method") not in ("estimation", "cache", "queue_timeout")):
+            result.get("method") not in ("estimation", "cache", "queue_timeout",
+                                          "invalid_url", "embed_fallback")):
             is_restricted = True
 
-        # Check 3: Non-restriction error
+        # Check 3: Invalid URL response from Apify
+        if result.get("method") == "invalid_url":
+            # Already handled above, but just in case it comes through Apify
+            print(f"[QUEUE] 🗑️ Apify confirmed invalid URL: {job.video_url}")
+            self._jobs_invalid += 1
+            # NO backoff increase, NO token penalty
+            await self._finalize_job(job, result)
+            return
+
+        # Check 4: Non-restriction error
         if result.get("error") and not is_restricted:
             has_error = True
 
@@ -311,17 +375,18 @@ class ScrapeQueue:
             result.get("views", 0) > 0 or result.get("likes", 0) > 0
         ):
             # ─── SUCCESS ───
-            if not result.get("estimated") and result.get("views", 0) > 0:
+            if not result.get("estimated") and result.get("views", 0) > 0 and not is_views_unknown:
                 # FULL success — got real views
                 print(f"[QUEUE] ✅ Full success: views={result['views']}, "
                       f"likes={result.get('likes', 0)}")
                 self._jobs_succeeded += 1
-                self._decrease_backoff()
+                self._reset_backoff()  # Fully reset on success
             else:
-                # Has parsed data (real likes, estimated views)
+                # Has parsed data (real likes, views unknown)
                 # Try again for real views if retries remain
                 if job.attempt < job.max_attempts - 1:
-                    print(f"[QUEUE] ⚠️ Got estimated data (likes={result.get('likes', 0)}), "
+                    print(f"[QUEUE] ⚠️ Got partial data (likes={result.get('likes', 0)}, "
+                          f"views_unknown={is_views_unknown}), "
                           f"retrying for real views "
                           f"(attempt {job.attempt + 1}/{job.max_attempts})")
                     self._increase_backoff()
@@ -331,10 +396,10 @@ class ScrapeQueue:
                     # DON'T save, DON'T signal — wait for retry
                     return
                 else:
-                    # Last attempt — save estimated data
-                    print(f"[QUEUE] ⚠️ Final attempt, saving estimated data: "
-                          f"views≈{result.get('views', 0)}, "
-                          f"likes={result.get('likes', 0)}(real)")
+                    # Last attempt — save what we have (views may be unknown)
+                    print(f"[QUEUE] ⚠️ Final attempt, saving available data: "
+                          f"views={result.get('views', 0)}, "
+                          f"likes={result.get('likes', 0)}")
                     self._jobs_succeeded += 1
 
             # Save + signal
@@ -359,7 +424,7 @@ class ScrapeQueue:
                 print(f"[QUEUE] ❌ Max retries exhausted for {job.video_url[:50]}")
                 self._jobs_failed += 1
 
-                # Use best available: partial_result > current result > estimation
+                # Use best available: partial_result > current result > embed fallback
                 final_result = job.partial_result or result
                 if final_result.get("views", 0) == 0 and final_result.get("likes", 0) == 0:
                     shortcode = self.apify._extract_shortcode(job.video_url)
@@ -383,7 +448,7 @@ class ScrapeQueue:
                 print(f"[QUEUE] ❌ Max retries for {job.video_url[:50]}: {error_text[:50]}")
                 self._jobs_failed += 1
 
-                # Use partial or estimation fallback
+                # Use partial or embed fallback
                 final_result = job.partial_result
                 if not final_result or (
                     final_result.get("views", 0) == 0 and
@@ -462,38 +527,40 @@ class ScrapeQueue:
               f"(consecutive errors: {self._consecutive_errors})")
 
     def _decrease_backoff(self):
-        """Decrease delays after successful request."""
-        if self._consecutive_errors > 0:
-            self._consecutive_errors = max(0, self._consecutive_errors - 1)
-            self._backoff_level = min(self._consecutive_errors, 3)
-            print(f"[QUEUE] 🟢 Backoff decreased → level {self._backoff_level}")
+        """Decrease delays after successful request. (Legacy — now just resets.)"""
+        self._reset_backoff()
 
     def _reset_backoff(self):
-        """Reset delays to default values."""
+        """Fully reset delays to default values."""
+        if self._consecutive_errors > 0:
+            print(f"[QUEUE] 🟢 Backoff RESET (was level {self._backoff_level}, "
+                  f"errors={self._consecutive_errors})")
         self._consecutive_errors = 0
         self._backoff_level = 0
-        print("[QUEUE] Backoff reset to 0")
 
     def _get_delay(self) -> float:
-        """Return the random delay for the current backoff level."""
+        """Return the random delay for the current backoff level.
+        
+        Capped between 15 and 120 seconds (never higher).
+        """
         ranges = {
-            0: (25, 45),
-            1: (50, 90),
-            2: (100, 180),
-            3: (150, 240),
+            0: (15, 25),     # normal
+            1: (30, 50),     # mild
+            2: (50, 80),     # medium
+            3: (80, 120),    # high — hard cap
         }
-        lo, hi = ranges.get(self._backoff_level, (150, 240))
+        lo, hi = ranges.get(self._backoff_level, (80, 120))
         return random.uniform(lo, hi)
 
     def _delay_description(self) -> str:
         """Human-readable description of current delay range."""
         ranges = {
-            0: "25-45s (normal)",
-            1: "50-90s (level 1)",
-            2: "100-180s (level 2)",
-            3: "150-240s (level 3)",
+            0: "15-25s (normal)",
+            1: "30-50s (level 1)",
+            2: "50-80s (level 2)",
+            3: "80-120s (level 3 — max)",
         }
-        return ranges.get(self._backoff_level, "150-240s (max)")
+        return ranges.get(self._backoff_level, "80-120s (max)")
 
     # ── Helpers ────────────────────────────────────────
 

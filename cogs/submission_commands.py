@@ -214,9 +214,16 @@ class SubmissionCommands(commands.Cog):
                     views = result.get("views", 0)
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
+                    views_unknown = result.get("views_unknown", False)
                     
                     # Determine indicators
-                    v_icon = "⚠️ ~" if result.get("estimated") else "✅ "
+                    if views_unknown:
+                        v_text = "❓ unknown"
+                    elif result.get("estimated"):
+                        v_text = f"⚠️ ~{views:,}"
+                    else:
+                        v_text = f"✅ {views:,}"
+                    
                     l_icon = "✅ " if result.get("likes_real") else ""
                     c_icon = "✅ " if result.get("comments_real") else ""
                     
@@ -228,19 +235,28 @@ class SubmissionCommands(commands.Cog):
                     final_embed.add_field(
                         name="📊 Metrics",
                         value=(
-                            f"👁️ {v_icon}{views:,} views\n"
+                            f"👁️ {v_text} views\n"
                             f"❤️ {l_icon}{likes:,} likes\n"
                             f"💬 {c_icon}{comments:,} comments"
                         ),
                         inline=False,
                     )
                     
+                    if views_unknown:
+                        final_embed.add_field(
+                            name="ℹ️",
+                            value="⚠️ Could not fetch view count. Will retry automatically.",
+                            inline=False,
+                        )
+                    
                     # Data source footer
                     footer = f"Campaign: {campaign_id}"
-                    if result.get("method") == "apify_restricted_parsed":
-                        footer += " | Data: Real likes/comments from IG (estimated views)"
+                    if views_unknown:
+                        footer += " | Views pending — real likes/comments from IG"
+                    elif result.get("method") == "apify_restricted_parsed":
+                        footer += " | Data: Real likes/comments from IG"
                     elif result.get("estimated"):
-                        footer += " | Data: Estimated views/likes"
+                        footer += " | Data: Partial — will retry for full data"
                     else:
                         footer += " | Data: Real-time from Instagram API ✅"
                         

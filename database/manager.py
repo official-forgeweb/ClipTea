@@ -452,12 +452,27 @@ class DatabaseManager:
     async def get_video_by_url(self, video_url: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            # Use LEFT JOIN so the lookup works even if the campaign was deleted
             async with db.execute(
                 """SELECT sv.*, c.name as campaign_name 
                    FROM submitted_videos sv
-                   JOIN campaigns c ON sv.campaign_id = c.id
+                   LEFT JOIN campaigns c ON sv.campaign_id = c.id
                    WHERE sv.video_url = ?""",
                 (video_url,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return dict(row)
+            
+            # Fallback: try matching by base URL (handles query-param mismatch)
+            # e.g. stored as "...reel/ABC?igsh=xyz" but user sends "...reel/ABC"
+            base_url = video_url.split('?')[0].rstrip('/')
+            async with db.execute(
+                """SELECT sv.*, c.name as campaign_name 
+                   FROM submitted_videos sv
+                   LEFT JOIN campaigns c ON sv.campaign_id = c.id
+                   WHERE sv.video_url LIKE ? OR sv.video_url = ?""",
+                (base_url + '%', base_url)
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
@@ -511,9 +526,20 @@ class DatabaseManager:
     async def delete_video(self, video_url: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON;")
+            # Try exact match first
             cursor = await db.execute(
                 "UPDATE submitted_videos SET status = 'deleted' WHERE video_url = ?",
                 (video_url,)
+            )
+            if cursor.rowcount > 0:
+                await db.commit()
+                return True
+            
+            # Fallback: try matching by base URL (handles query-param mismatch)
+            base_url = video_url.split('?')[0].rstrip('/')
+            cursor = await db.execute(
+                "UPDATE submitted_videos SET status = 'deleted' WHERE video_url LIKE ?",
+                (base_url + '%',)
             )
             await db.commit()
             return cursor.rowcount > 0

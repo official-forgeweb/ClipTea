@@ -62,11 +62,17 @@ def extract_video_id(url: str, platform: str) -> str:
     return ""
 
 def normalize_url(url: str) -> str:
-    """Normalize a URL by ensuring https:// prefix."""
+    """Normalize a URL by ensuring https:// prefix and cleaning platform-specific quirks."""
     url = url.strip()
-    # Don't strip trailing slash for YouTube watch URLs because they might have other params
     if not url.startswith('http'):
         url = 'https://' + url
+    
+    # Strip query parameters and trailing slashes for Instagram URLs
+    # This prevents duplicates (same reel with different ?igsh= params)
+    # and avoids Apify issues with tracking params
+    if 'instagram.com/' in url:
+        url = url.split('?')[0].rstrip('/')
+    
     return url
 
 def get_platform_emoji(platform: str) -> str:

@@ -10,6 +10,179 @@ from typing import Optional
 
 from config import DATABASE_PATH
 
+# ── URL Validation ─────────────────────────────────────
+
+def validate_instagram_url(url: str) -> dict:
+    """Validate and normalize an Instagram reel/post URL before queueing.
+    
+    Returns:
+        {"valid": True, "clean_url": "https://...", "shortcode": "..."}
+        or
+        {"valid": False, "reason": "..."}
+    """
+    # Strip query params and trailing slashes
+    clean = url.split('?')[0].rstrip('/')
+    
+    # Match valid reel or post URL
+    pattern = r'^https?://(?:www\.)?instagram\.com/(?:reel|reels|p)/([A-Za-z0-9_-]+)/?$'
+    match = re.match(pattern, clean)
+    
+    if not match:
+        return {"valid": False, "reason": "Not a valid Instagram reel/post URL"}
+    
+    shortcode = match.group(1)
+    
+    # Real Instagram shortcodes are exactly 11 characters
+    if len(shortcode) != 11:
+        return {
+            "valid": False,
+            "reason": f"Invalid shortcode length: {len(shortcode)} (expected 11)"
+        }
+    
+    # Reject obviously fake shortcodes (all same char, or only 1-2 unique chars)
+    if len(set(shortcode)) <= 2:
+        return {"valid": False, "reason": "Shortcode looks fake"}
+    
+    normalized = f"https://www.instagram.com/reel/{shortcode}"
+    
+    return {
+        "valid": True,
+        "clean_url": normalized,
+        "shortcode": shortcode,
+    }
+
+
+# ── Error Classification ──────────────────────────────
+
+def classify_apify_response(raw_data: dict, input_url: str = "") -> dict:
+    """Classify an Apify response into a specific error type.
+    
+    Returns dict with:
+        type: SUCCESS | INVALID_URL | PARTIAL | RESTRICTED | UNKNOWN
+        should_penalize_token: bool
+        should_retry: bool
+        + extracted data fields when available
+    """
+    # FULL SUCCESS — has actual view count data
+    view_count = raw_data.get("videoPlayCount") or raw_data.get("videoViewCount")
+    if view_count is not None:
+        return {
+            "type": "SUCCESS",
+            "views": int(view_count),
+            "likes": int(raw_data.get("likesCount", 0) or 0),
+            "comments": int(raw_data.get("commentsCount", 0) or 0),
+            "shares": int(raw_data.get("sharesCount", 0) or 0),
+            "author": raw_data.get("ownerUsername", ""),
+            "caption": _safe_caption(raw_data),
+            "posted_at": raw_data.get("timestamp") or raw_data.get("created_at"),
+            "should_penalize_token": False,
+            "should_retry": False,
+        }
+    
+    description = str(raw_data.get("description", "") or "")
+    image = str(raw_data.get("image", "") or "")
+    error = str(raw_data.get("error", "") or "")
+    
+    # INVALID URL — restricted error with NO description AND NO image
+    # This means the post does not exist on Instagram
+    if error == "restricted_page" and not description.strip() and not image.strip():
+        return {
+            "type": "INVALID_URL",
+            "should_penalize_token": False,
+            "should_retry": False,
+            "reason": "Post does not exist or was deleted",
+        }
+    
+    # PARTIAL DATA — restricted but description contains likes/comments
+    if error == "restricted_page" and description.strip():
+        parsed = parse_description(description)
+        
+        # Also try to get author from title
+        author = parsed.get("author", "")
+        if not author:
+            title = str(raw_data.get("title", "") or "")
+            title_match = re.search(r'\(@(\w+)\)', title)
+            if title_match:
+                author = title_match.group(1)
+        if not author:
+            author = (raw_data.get("ownerUsername") or
+                      raw_data.get("owner_username") or
+                      raw_data.get("username") or "")
+        
+        return {
+            "type": "PARTIAL",
+            "likes": parsed.get("likes", 0),
+            "comments": parsed.get("comments", 0),
+            "author": author,
+            "views": None,  # DO NOT ESTIMATE. Views unknown.
+            "should_penalize_token": True,
+            "penalty_level": "mild",
+            "should_retry": True,
+        }
+    
+    # RESTRICTED — has image but no useful data
+    if error == "restricted_page":
+        return {
+            "type": "RESTRICTED",
+            "should_penalize_token": True,
+            "penalty_level": "medium",
+            "should_retry": True,
+        }
+    
+    # UNKNOWN ERROR
+    return {
+        "type": "UNKNOWN",
+        "should_penalize_token": True,
+        "penalty_level": "medium",
+        "should_retry": True,
+        "raw_error": str(raw_data)[:500],
+    }
+
+
+def parse_description(description: str) -> dict:
+    """Extract likes, comments, author from Apify restricted description.
+    
+    Pattern: "71 likes, 0 comments - gamblingmomentee on March 11, 2026: ..."
+    """
+    # Full pattern with all three fields
+    match = re.match(
+        r'([\d,]+)\s+likes?,\s*([\d,]+)\s+comments?\s*-\s*(\w+)\s+on\s+',
+        description
+    )
+    if match:
+        return {
+            "likes": int(match.group(1).replace(',', '')),
+            "comments": int(match.group(2).replace(',', '')),
+            "author": match.group(3),
+        }
+    
+    # Try individual fields
+    result = {}
+    likes_match = re.search(r'([\d,]+)\s+likes?', description, re.IGNORECASE)
+    if likes_match:
+        result["likes"] = int(likes_match.group(1).replace(',', ''))
+    
+    comments_match = re.search(r'([\d,]+)\s+comments?', description, re.IGNORECASE)
+    if comments_match:
+        result["comments"] = int(comments_match.group(1).replace(',', ''))
+    
+    author_match = re.search(r'-\s*(\w+)\s+on\s+', description)
+    if author_match:
+        result["author"] = author_match.group(1)
+    
+    return result
+
+
+def _safe_caption(item: dict) -> str:
+    """Safely extract caption text from an Apify item."""
+    caption = item.get("caption", "")
+    if isinstance(caption, dict):
+        caption = caption.get("text", "")
+    if caption is None:
+        caption = ""
+    return str(caption)[:200]
+
+
 class ApifyInstagramService:
     """Fetch Instagram video metrics using Apify's Instagram Post Scraper."""
     
@@ -137,9 +310,10 @@ class ApifyInstagramService:
         """
         Main function: Get metrics for an Instagram video.
         
-        1. Check cache first (free, instant)
-        2. If not cached or expired, call Apify API
-        3. If Apify fails, fall back to estimation
+        1. Validate URL
+        2. Check cache first (free, instant)
+        3. If not cached or expired, call Apify API
+        4. If Apify fails, fall back (no estimation of views)
         """
         shortcode = self._extract_shortcode(video_url)
         if not shortcode:
@@ -156,7 +330,7 @@ class ApifyInstagramService:
             if cached:
                 return cached
         
-        # Step 2: Call Apify API
+        # Step 2: Call Apify API (with fallback actor)
         if self.token:
             result = await self._call_apify(video_url, shortcode)
             if result and not result.get("error"):
@@ -170,48 +344,111 @@ class ApifyInstagramService:
                 error_msg = result.get("error", "Unknown error") if result else "No response"
                 await self._log_usage(shortcode, False, error_msg)
         
-        # Step 3: Fallback to estimation
+        # Step 3: Fallback — try embed endpoint for likes (NO view estimation)
         return await self._estimation_fallback(video_url, shortcode)
     
     async def _call_apify(self, video_url: str, shortcode: str) -> Optional[dict]:
         """
         Call Apify API to scrape Instagram post.
         Uses the run-sync-get-dataset-items endpoint with token rotation.
+        Tries primary actor first, then fallback actor.
         """
-        # Get token from rotator (falls back to single token)
+        # Get token from rotator (returns None if all cooling)
         token = self.token_rotator.get_next_token()
         if not token:
             token = self.token
         if not token:
-            return {"error": "No Apify tokens configured"}
+            return {"error": "No Apify tokens available (all on cooldown or none configured)"}
 
-        # BUILD THE CORRECT URL
+        # Strip query params from the URL before sending to Apify
+        clean_url = video_url.split('?')[0].rstrip('/')
+
+        # ── Method 1: Primary actor (instagram-post-scraper) ──
+        result = await self._call_apify_actor(
+            actor_id=self.actor_id,
+            payload={"directUrls": [clean_url], "resultsLimit": 1},
+            token=token,
+            shortcode=shortcode,
+        )
+
+        if result is not None:
+            # Classify the response
+            classification = classify_apify_response(result, video_url)
+            
+            if classification["type"] == "SUCCESS":
+                self.token_rotator.report_result(token, classification)
+                return self._build_result(classification, method="live")
+            
+            # If primary actor didn't get full data, try fallback
+            # But first report the result to rotator
+            self.token_rotator.report_result(token, classification)
+            
+            # For PARTIAL data, return what we have (no view estimation)
+            if classification["type"] == "PARTIAL":
+                return self._build_result(classification, method="apify_restricted_parsed")
+            
+            # For INVALID_URL, return immediately — won't work on any actor
+            if classification["type"] == "INVALID_URL":
+                return {
+                    "views": 0, "likes": 0, "comments": 0,
+                    "author_username": "", "method": "invalid_url",
+                    "estimated": False, "cached": False,
+                    "error": classification.get("reason", "Post does not exist"),
+                }
+
+        # ── Method 2: Fallback actor (instagram-scraper) ──
+        fallback_actor = "apify~instagram-scraper"
+        if fallback_actor != self.actor_id:
+            print(f"[REEL] Primary actor returned no views. Trying fallback: {fallback_actor}")
+
+            fallback_token = self.token_rotator.get_next_token() or token
+            fallback_result = await self._call_apify_actor(
+                actor_id=fallback_actor,
+                payload={
+                    "directUrls": [clean_url],
+                    "resultsLimit": 1,
+                    "resultsType": "posts",
+                },
+                token=fallback_token,
+                shortcode=shortcode,
+            )
+
+            if fallback_result is not None:
+                fb_classification = classify_apify_response(fallback_result, video_url)
+                self.token_rotator.report_result(fallback_token, fb_classification)
+
+                if fb_classification["type"] in ("SUCCESS", "PARTIAL"):
+                    method = "live" if fb_classification["type"] == "SUCCESS" else "apify_restricted_parsed"
+                    return self._build_result(fb_classification, method=method)
+
+        # Both actors failed — return error
+        return {"error": "restricted_page", "restricted": True,
+                "views": 0, "likes": 0, "comments": 0,
+                "author_username": "", "method": "apify_failed",
+                "estimated": False, "cached": False}
+
+    async def _call_apify_actor(self, actor_id: str, payload: dict,
+                                 token: str, shortcode: str) -> Optional[dict]:
+        """Call a specific Apify actor and return the first result item, or None."""
         url = (
-            f"{self.BASE_URL}/acts/{self.actor_id}"
+            f"{self.BASE_URL}/acts/{actor_id}"
             f"/run-sync-get-dataset-items"
             f"?token={token}"
         )
-        
-        payload = {
-            "username": [video_url],
-            "resultsLimit": 1
-        }
-        
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
+
+        headers = {"Content-Type": "application/json"}
+
         try:
             timeout = aiohttp.ClientTimeout(total=120)
-            
+
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                print(f"[REEL] Calling: {self.BASE_URL}/acts/{self.actor_id}/run-sync-get-dataset-items")
+                print(f"[REEL] Calling: {self.BASE_URL}/acts/{actor_id}/run-sync-get-dataset-items")
                 print(f"[REEL] Payload: {json.dumps(payload)}")
-                
+
                 async with session.post(url, json=payload, headers=headers) as resp:
                     response_text = await resp.text()
-                    
-                    if resp.status != 200 and resp.status != 201:
+
+                    if resp.status not in (200, 201):
                         print(f"[Apify] API Error: {resp.status} - {response_text[:500]}")
                         if resp.status == 401:
                             self.token_rotator.report_invalid(token)
@@ -219,17 +456,16 @@ class ApifyInstagramService:
                             self.token_rotator.report_exhausted(token)
                         else:
                             self.token_rotator.report_error(token)
-                        return {"error": f"Apify returned status {resp.status}"}
+                        return None
 
-                    
                     # Parse response
                     try:
                         data = json.loads(response_text)
                     except json.JSONDecodeError:
                         print(f"[Apify] Invalid JSON response: {response_text[:500]}")
                         self.token_rotator.report_error(token)
-                        return {"error": "Invalid response from Apify"}
-                    
+                        return None
+
                     # Response is an array of items
                     if isinstance(data, list) and len(data) > 0:
                         item = data[0]
@@ -242,268 +478,60 @@ class ApifyInstagramService:
                     else:
                         print(f"[Apify] Unexpected response format: {response_text[:500]}")
                         self.token_rotator.report_error(token)
-                        return {"error": "Unexpected response format"}
-                    
-                    # Extract metrics from item
+                        return None
+
+                    # Log raw data for debugging
                     print(f"[REEL] RAW KEYS: {list(item.keys())}")
                     print(f"[REEL] RAW DATA: {json.dumps(item, indent=2, default=str)[:3000]}")
-                    result = self._parse_apify_response(item)
-                    
-                    # Report to token rotator based on result
-                    if result.get("error") == "restricted_page" or result.get("restricted"):
-                        self.token_rotator.report_restriction(token)
-                    elif result.get("views", 0) > 0 or (
-                        result.get("likes", 0) > 0 and not result.get("estimated")
-                    ):
-                        self.token_rotator.report_success(token)
-                    else:
-                        self.token_rotator.report_error(token)
-                    
-                    return result
-        
+
+                    return item
+
         except asyncio.TimeoutError:
-            print("[Apify] Request timed out (120 seconds)")
+            print(f"[Apify] Request timed out (120 seconds) for actor {actor_id}")
             self.token_rotator.report_error(token)
-            return {"error": "Apify request timed out"}
+            return None
         except aiohttp.ClientError as e:
             print(f"[Apify] Connection error: {e}")
             self.token_rotator.report_error(token)
-            return {"error": f"Connection error: {str(e)}"}
+            return None
         except Exception as e:
             print(f"[Apify] Unexpected error: {e}")
             self.token_rotator.report_error(token)
-            return {"error": f"Unexpected error: {str(e)}"}
-    
-    def _parse_apify_response(self, item: dict) -> dict:
-        """
-        Parse Apify scraper response.
-        Different scrapers use different field names.
-        Check all possible variations.
-        """
-        # ── CHECK FOR RESTRICTED PAGE ERROR FIRST ──────────
-        error_val = str(item.get("error", "")).lower()
-        error_desc = str(item.get("errorDescription", "")).lower()
+            return None
 
-        if "restricted" in error_val or "restricted" in error_desc:
-            # Try to extract REAL data from the description text
-            description = str(item.get("description", ""))
-            title = str(item.get("title", ""))
+    def _build_result(self, classification: dict, method: str = "live") -> dict:
+        """Build a standardized result dict from a classification."""
+        views = classification.get("views")
+        likes = classification.get("likes", 0) or 0
+        comments = classification.get("comments", 0) or 0
+        shares = classification.get("shares", 0) or 0
+        author = classification.get("author", "")
 
-            likes = 0
-            comments = 0
-            author = ""
-
-            # ─── Parse description text ───
-            # Pattern: "36 likes, 1 comments - allinamerica on March 12, 2026: "
-            desc_match = re.search(
-                r'(\d[\d,]*)\s*likes?,?\s*(\d[\d,]*)\s*comments?\s*-\s*(\w+)\s+on\s+',
-                description
-            )
-            if desc_match:
-                likes = int(desc_match.group(1).replace(",", ""))
-                comments = int(desc_match.group(2).replace(",", ""))
-                author = desc_match.group(3)
-                print(f"[Apify] 🔍 Parsed from description: "
-                      f"likes={likes}, comments={comments}, author=@{author}")
-            else:
-                # Try simpler patterns individually
-                likes_match = re.search(r'(\d[\d,]*)\s*likes?', description, re.IGNORECASE)
-                if likes_match:
-                    likes = int(likes_match.group(1).replace(",", ""))
-
-                comments_match = re.search(r'(\d[\d,]*)\s*comments?', description, re.IGNORECASE)
-                if comments_match:
-                    comments = int(comments_match.group(1).replace(",", ""))
-
-                # Author from description: "- username on"
-                author_match = re.search(r'-\s*(\w+)\s+on\s+', description)
-                if author_match:
-                    author = author_match.group(1)
-
-            # ─── Parse author from title as backup ───
-            # Title: "Username (@handle) • Instagram reel"
-            if not author and title:
-                title_match = re.search(r'\(@(\w+)\)', title)
-                if title_match:
-                    author = title_match.group(1)
-
-            # ─── Also try standard field names for author ───
-            if not author:
-                author = (
-                    item.get("ownerUsername") or
-                    item.get("owner_username") or
-                    item.get("username") or ""
-                )
-
-            # ─── Estimate views from likes ───
-            # Likes are typically ~4% of views on Instagram
-            estimated_views = int(likes / 0.04) if likes > 0 else 0
-
-            caption = item.get("caption", "")
-            if isinstance(caption, dict):
-                caption = caption.get("text", "")
-
-            print(f"[Apify] 📊 Restricted parsed: views≈{estimated_views}, "
-                  f"likes={likes}(real), comments={comments}(real), author=@{author}")
-
-            return {
-                "views": estimated_views,
-                "likes": likes,
-                "comments": comments,
-                "shares": 0,
-                "author_username": str(author),
-                "caption": str(caption or description or "")[:200],
-                "method": "apify_restricted_parsed",
-                "estimated": True,           # views are estimated
-                "likes_real": True,          # likes came from description (REAL)
-                "comments_real": True,       # comments came from description (REAL)
-                "restricted": True,          # flag for queue to know this was restricted
-                "error": "restricted_page",  # keep for queue retry logic
-                "cached": False,
-            }
-
-        # Views — check all possible field names
-        views = (
-            item.get("videoPlayCount") or
-            item.get("videoViewCount") or
-            item.get("video_view_count") or
-            item.get("video_play_count") or
-            item.get("playCount") or
-            item.get("viewCount") or
-            item.get("views") or
-            item.get("play_count") or
-            item.get("view_count") or
-            0
-        )
-        
-        # Likes
-        likes = (
-            item.get("likesCount") or
-            item.get("likes_count") or
-            item.get("likeCount") or
-            item.get("like_count") or
-            item.get("likes") or
-            0
-        )
-        
-        # Comments
-        comments = (
-            item.get("commentsCount") or
-            item.get("comments_count") or
-            item.get("commentCount") or
-            item.get("comment_count") or
-            item.get("comments") or
-            0
-        )
-        
-        # Author username
-        author = (
-            item.get("ownerUsername") or
-            item.get("owner_username") or
-            item.get("username") or
-            ""
-        )
-        
-        # If author is in a nested object
-        if not author:
-            owner = item.get("owner", {})
-            if isinstance(owner, dict):
-                author = owner.get("username", "")
-        
-        # Caption
-        caption = item.get("caption", "")
-        if isinstance(caption, dict):
-            caption = caption.get("text", "")
-        if caption is None:
-            caption = ""
-        
-        # Shares
-        shares = (
-            item.get("sharesCount") or
-            item.get("shares_count") or
-            item.get("shareCount") or
-            item.get("share_count") or
-            0
-        )
-        
-        # Posted at timestamp
-        posted_at = item.get("timestamp") or item.get("created_at") or None
-        
-        # --- Description Regex Fallback (Important for 'restricted_page' errors) ---
-        description = item.get("description", "")
-        if description and isinstance(description, str):
-
-            
-            def parse_number(s):
-                s = s.lower().replace(',', '').strip()
-                multiplier = 1
-                if 'k' in s:
-                    multiplier = 1000
-                    s = s.replace('k', '')
-                elif 'm' in s:
-                    multiplier = 1000000
-                    s = s.replace('m', '')
-                try:
-                    return int(float(s) * multiplier)
-                except:
-                    return 0
-
-            # Extract metrics from descriptions like "20 likes, 0 comments - user on ..."
-            if likes == 0:
-                l_match = re.search(r'([\d,.]+k?m?)\s+likes', description, re.IGNORECASE)
-                if l_match:
-                    likes = parse_number(l_match.group(1))
-            
-            if comments == 0:
-                c_match = re.search(r'([\d,.]+k?m?)\s+comments', description, re.IGNORECASE)
-                if c_match:
-                    comments = parse_number(c_match.group(1))
-
-            if views == 0:
-                # SEO descriptions rarely show views, but we check just in case
-                v_match = re.search(r'([\d,.]+k?m?)\s+views', description, re.IGNORECASE)
-                if v_match:
-                    views = parse_number(v_match.group(1))
-            
-            if not author:
-                # Part of description: "- elitepokermoments on March 11, 2026"
-                a_match = re.search(r'-\s+([\w.]+)\s+on\s+', description)
-                if a_match:
-                    author = a_match.group(1)
-
-        # Ensure all values are integers
-        try:
-            views = int(views) if views else 0
-        except (ValueError, TypeError):
+        # Views can be None (PARTIAL) or int (SUCCESS)
+        has_real_views = views is not None
+        if views is None:
             views = 0
-        try:
-            likes = int(likes) if likes else 0
-        except (ValueError, TypeError):
-            likes = 0
-        try:
-            comments = int(comments) if comments else 0
-        except (ValueError, TypeError):
-            comments = 0
-        try:
-            shares = int(shares) if shares else 0
-        except (ValueError, TypeError):
-            shares = 0
-        
-        print(f"[REEL] Parsed: views={views}, likes={likes}, comments={comments}, author={author}")
-        
+
+        caption = classification.get("caption", "")
+
         return {
-            "views": views,
-            "likes": likes,
-            "comments": comments,
-            "shares": shares,
-            "author_username": author,
+            "views": int(views),
+            "likes": int(likes),
+            "comments": int(comments),
+            "shares": int(shares),
+            "author_username": str(author),
             "caption": str(caption)[:200],
-            "posted_at": posted_at,
-            "method": "live",
-            "estimated": False,
+            "posted_at": classification.get("posted_at"),
+            "method": method,
+            "estimated": not has_real_views,
+            "likes_real": True if likes > 0 else False,
+            "comments_real": True if comments > 0 else False,
+            "restricted": classification.get("type") in ("PARTIAL", "RESTRICTED"),
+            "error": "restricted_page" if classification.get("type") in ("PARTIAL", "RESTRICTED") else None,
             "cached": False,
+            "views_unknown": not has_real_views,
         }
-    
+
     async def _get_from_cache(self, shortcode: str) -> Optional[dict]:
         """Get cached metrics if not expired."""
         try:
@@ -561,7 +589,7 @@ class ApifyInstagramService:
                         fetched_at = excluded.fetched_at
                 """, (
                     shortcode,
-                    data.get("views", 0),
+                    data.get("views", 0) or 0,
                     data.get("likes", 0),
                     data.get("comments", 0),
                     data.get("shares", 0),
@@ -595,7 +623,7 @@ class ApifyInstagramService:
             print(f"[Apify] Usage logging error: {e}")
     
     async def _estimation_fallback(self, video_url: str, shortcode: str) -> dict:
-        """Fallback: try embed endpoint for likes, estimate views."""
+        """Fallback: try embed endpoint for likes. DO NOT estimate views."""
         likes = 0
         comments = 0
         author = ""
@@ -630,22 +658,21 @@ class ApifyInstagramService:
         except Exception as e:
             print(f"[Apify] Embed fallback error: {e}")
         
-        # Estimate views from likes (likes ≈ 4% of views)
-        estimated_views = int(likes / 0.04) if likes > 0 else 0
-        
+        # DO NOT estimate views. Return None/0 if no real views available.
         result = {
-            "views": estimated_views,
+            "views": 0,
             "likes": likes,
             "comments": comments,
             "shares": 0,
             "author_username": author,
-            "method": "estimation",
-            "estimated": True,
+            "method": "embed_fallback",
+            "estimated": True if likes > 0 else False,
+            "views_unknown": True,
             "cached": False,
-            "note": "Link your Instagram with /link_account for accurate views"
+            "note": "⚠️ Could not fetch view count. Will retry automatically."
         }
         
-        # Cache the estimation too (with shorter duration)
+        # Cache the partial data (with shorter duration)
         if likes > 0:
             await self._save_to_cache(shortcode, result)
         
@@ -693,11 +720,13 @@ class ApifyInstagramService:
     @staticmethod
     def _extract_shortcode(url: str) -> str:
         """Extract shortcode from Instagram URL."""
+        # Strip query params first
+        clean = url.split('?')[0]
         patterns = [
             r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)',
         ]
         for pattern in patterns:
-            match = re.search(pattern, url)
+            match = re.search(pattern, clean)
             if match:
                 return match.group(1)
         return ""
