@@ -50,6 +50,13 @@ class IGBioVerifier:
         self.proxy_rotator = proxy_rotator
         self.timeout = timeout
         self.apify_token = config.PRIMARY_APIFY_TOKEN
+        
+        # Initialize token rotator for bio checks too
+        try:
+            from services.apify_token_rotator import ApifyTokenRotator
+            self.token_rotator = ApifyTokenRotator()
+        except ImportError:
+            self.token_rotator = None
 
 
     async def check_bio(self, username: str, code: str) -> bool:
@@ -82,9 +89,11 @@ class IGBioVerifier:
         """Try every method in order until one succeeds."""
 
         # ── Method 1: Apify (most reliable) ─────────
-        if self.apify_token:
+        token = self.token_rotator.get_next_token() if self.token_rotator else self.apify_token
+        
+        if token:
             log.info("[IGBioVerifier] Trying Apify profile scraper for @%s", username)
-            bio = await self._try_apify(username)
+            bio = await self._try_apify(username, token)
             if bio is not None:
                 if code.lower() in bio.lower():
                     log.info("[IGBioVerifier] ✅ Code found via Apify for @%s", username)
@@ -119,7 +128,7 @@ class IGBioVerifier:
     #  Method 1: Apify Instagram Profile Scraper
     # ────────────────────────────────────────────────
 
-    async def _try_apify(self, username: str) -> Optional[str]:
+    async def _try_apify(self, username: str, token: str) -> Optional[str]:
         """
         Use Apify's Instagram Profile Scraper to fetch the bio.
         Uses the synchronous run endpoint for simplicity.
@@ -138,7 +147,7 @@ class IGBioVerifier:
                 log.info("[IGBioVerifier] Calling Apify actor %s for @%s", actor_id, username)
                 resp = await client.post(
                     url,
-                    params={"token": self.apify_token},
+                    params={"token": token},
                     json=payload,
                 )
 
@@ -149,12 +158,20 @@ class IGBioVerifier:
                         profile = data[0]
                         bio = profile.get("biography") or profile.get("bio") or profile.get("biographyText") or ""
                         log.info("[IGBioVerifier] Apify returned bio for @%s: '%s'", username, bio[:200])
+                        if self.token_rotator: self.token_rotator.report_success(token)
                         return bio
                     else:
                         log.warning("[IGBioVerifier] Apify returned empty dataset for @%s", username)
                 else:
                     log.warning("[IGBioVerifier] Apify returned status %s for @%s: %s",
                                 resp.status_code, username, resp.text[:300])
+                    if self.token_rotator:
+                        if resp.status_code == 401:
+                            self.token_rotator.report_invalid(token)
+                        elif resp.status_code == 403 and "usage hard limit exceeded" in resp.text.lower():
+                            self.token_rotator.report_exhausted(token)
+                        else:
+                            self.token_rotator.report_error(token)
 
                 # Fallback: try the scraper with a different actor slug
                 alt_actor_id = "apify~instagram-scraper"
@@ -170,7 +187,7 @@ class IGBioVerifier:
                 log.info("[IGBioVerifier] Trying alternative Apify actor %s for @%s", alt_actor_id, username)
                 resp2 = await client.post(
                     alt_url,
-                    params={"token": self.apify_token},
+                    params={"token": token},
                     json=alt_payload,
                 )
 
@@ -180,10 +197,12 @@ class IGBioVerifier:
                         profile2 = data2[0]
                         bio = profile2.get("biography") or profile2.get("bio") or profile2.get("biographyText") or ""
                         log.info("[IGBioVerifier] Alt Apify returned bio for @%s: %s", username, bio[:200])
+                        if self.token_rotator: self.token_rotator.report_success(token)
                         return bio
                 else:
                     log.warning("[IGBioVerifier] Alt Apify returned status %s for @%s",
                                 resp2.status_code, username)
+                    if self.token_rotator: self.token_rotator.report_error(token)
 
         except asyncio.TimeoutError:
             log.warning("[IGBioVerifier] Apify request timed out for @%s", username)

@@ -77,15 +77,28 @@ class ApifyTokenRotator:
             print(f"[TokenRotator] 🔑 Using {stats['name']} (success: {success_rate})")
             return token
 
-        # All tokens on cooldown — find the one expiring soonest
-        soonest = min(
-            self.tokens,
+        # All valid tokens are cooling — find the one expiring soonest
+        valid_tokens = [t for t in self.tokens if t not in self.invalid_tokens]
+        if not valid_tokens:
+            print("[TokenRotator] 🛑 No valid tokens remaining!")
+            return None
+
+        soonest_token = min(
+            valid_tokens,
             key=lambda t: self.token_stats[t].get("cooldown_until") or datetime.min
         )
-        stats = self.token_stats[soonest]
+        stats = self.token_stats[soonest_token]
+        
+        # If the soonest token is cooling for > 1 hour, it's exhausted.
+        # Don't force it; return None so the caller can fall back to estimation.
+        if stats["cooldown_until"] and (stats["cooldown_until"] - now) > timedelta(hours=1):
+            print(f"[TokenRotator] 🛑 All tokens exhausted. {stats['name']} cooling for long time.")
+            return None
+
+        print(f"[TokenRotator] ⚠️ All tokens cooling. Forcing {stats['name']} (soonest)")
         stats["requests"] += 1
-        print(f"[TokenRotator] ⚠️ All tokens cooling. Forcing {stats['name']}")
-        return soonest
+        return soonest_token
+
 
     def report_success(self, token: str):
         """Token successfully scraped a video with real data."""
@@ -110,7 +123,15 @@ class ApifyTokenRotator:
         cooldown_min = min(stats["consecutive_restrictions"] * 3, 30)
         stats["cooldown_until"] = datetime.now() + timedelta(minutes=cooldown_min)
 
-        print(f"[TokenRotator] restricted! Cooldown: {cooldown_min}min (consecutive: {stats['consecutive_restrictions']})")
+        print(f"[TokenRotator] ⚠️ {stats['name']} restricted! Cooldown: {cooldown_min}min")
+
+    def report_exhausted(self, token: str):
+        """Token reached Apify usage limit (403). Cooldown for 24 hours."""
+        if token not in self.token_stats:
+            return
+        stats = self.token_stats[token]
+        stats["cooldown_until"] = datetime.now() + timedelta(hours=24)
+        print(f"[TokenRotator] 🛑 {stats['name']} QUOTA EXCEEDED! Cooling for 24h.")
 
 
     def report_invalid(self, token: str):

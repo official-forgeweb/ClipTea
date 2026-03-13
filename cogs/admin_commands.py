@@ -533,6 +533,7 @@ class AdminCommands(commands.Cog):
                 'views': views
             })
             user_data[uid]['total_views'] += views
+            total_campaign_views += views
 
         # 3. Create Summary Embed
         embed = discord.Embed(
@@ -564,9 +565,9 @@ class AdminCommands(commands.Cog):
         if len(user_data) > 15:
             summary_text += f"*...and {len(user_data) - 15} more clippers in the CSV file.*"
 
-        # Discord embed limits
-        if len(summary_text) > 4000:
-            summary_text = summary_text[:3900] + "\n\n*(Summary truncated, see CSV for full details)*"
+        if len(summary_text) > 1024:
+            summary_text = summary_text[:950] + "\n\n*(Summary truncated, see CSV for full details)*"
+
             
         embed.add_field(name="📊 Clipper Breakdown", value=summary_text, inline=False)
 

@@ -215,6 +215,8 @@ class ApifyInstagramService:
                         print(f"[Apify] API Error: {resp.status} - {response_text[:500]}")
                         if resp.status == 401:
                             self.token_rotator.report_invalid(token)
+                        elif resp.status == 403 and "usage hard limit exceeded" in response_text.lower():
+                            self.token_rotator.report_exhausted(token)
                         else:
                             self.token_rotator.report_error(token)
                         return {"error": f"Apify returned status {resp.status}"}
@@ -430,7 +432,7 @@ class ApifyInstagramService:
         # --- Description Regex Fallback (Important for 'restricted_page' errors) ---
         description = item.get("description", "")
         if description and isinstance(description, str):
-            import re
+
             
             def parse_number(s):
                 s = s.lower().replace(',', '').strip()
@@ -608,7 +610,6 @@ class ApifyInstagramService:
                         html = await resp.text()
                         
                         # Extract likes
-                        import re
                         like_match = re.search(r'"edge_media_preview_like"\s*:\s*\{\s*"count"\s*:\s*(\d+)', html)
                         if like_match:
                             likes = int(like_match.group(1))
