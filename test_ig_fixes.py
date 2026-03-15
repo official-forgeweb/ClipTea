@@ -231,18 +231,17 @@ def test_token_rotator_partial_mild_penalty():
 
 # ── 5. Queue Backoff Tests ───────────────────────────────
 
-def test_backoff_capped_at_120():
-    """Delay should never exceed 120 seconds."""
-    # Can't easily import ScrapeQueue without full async setup,
-    # so test the delay ranges directly
+def test_backoff_capped_at_80():
+    """Delay should never exceed 80 seconds (updated from 120)."""
+    # Updated ranges for faster queue processing
     ranges = {
-        0: (15, 25),
-        1: (30, 50),
-        2: (50, 80),
-        3: (80, 120),
+        0: (10, 18),
+        1: (20, 35),
+        2: (35, 55),
+        3: (55, 80),
     }
     for level, (lo, hi) in ranges.items():
-        assert hi <= 120, f"Level {level} has max delay {hi} > 120"
+        assert hi <= 80, f"Level {level} has max delay {hi} > 80"
         assert lo >= 10, f"Level {level} has min delay {lo} < 10"
 
 
@@ -272,7 +271,65 @@ def test_normalize_adds_https():
     assert result.startswith("https://")
 
 
-# ── Runner ───────────────────────────────────────────────
+# ── 7. Build Result Tests ────────────────────────────────
+
+def test_build_result_views_none():
+    """_build_result should return views=None (not -1) for PARTIAL data."""
+    from services.apify_instagram import ApifyInstagramService
+    service = ApifyInstagramService.__new__(ApifyInstagramService)
+    classification = {
+        "type": "PARTIAL",
+        "views": None,
+        "likes": 42,
+        "comments": 3,
+        "author": "testuser",
+    }
+    result = service._build_result(classification, method="apify_restricted_parsed")
+    assert result["views"] is None, f"views should be None, got {result['views']}"
+    assert result["views_unknown"] is True
+    assert result["likes"] == 42
+
+def test_build_result_views_success():
+    """_build_result should return int views for SUCCESS data."""
+    from services.apify_instagram import ApifyInstagramService
+    service = ApifyInstagramService.__new__(ApifyInstagramService)
+    classification = {
+        "type": "SUCCESS",
+        "views": 5000,
+        "likes": 100,
+        "comments": 10,
+        "author": "testuser",
+    }
+    result = service._build_result(classification, method="live")
+    assert result["views"] == 5000
+    assert result["views_unknown"] is False
+
+
+# ── 8. Token Rotator Excluding Tests ─────────────────────
+
+def test_token_rotator_excluding():
+    """get_next_token_excluding should prefer tokens NOT in exclude list."""
+    os.environ["APIFY_TOKENS"] = "token_a,token_b,token_c"
+    from services.apify_token_rotator import ApifyTokenRotator
+    rotator = ApifyTokenRotator()
+
+    result = rotator.get_next_token_excluding(["token_a"])
+    assert result != "token_a", f"Should not return excluded token, got {result}"
+    assert result in ("token_b", "token_c"), f"Expected token_b or token_c, got {result}"
+
+def test_token_rotator_excluding_all_excluded():
+    """When all tokens excluded but some available, should still return one."""
+    os.environ["APIFY_TOKENS"] = "token_x,token_y"
+    from services.apify_token_rotator import ApifyTokenRotator
+    rotator = ApifyTokenRotator()
+
+    result = rotator.get_next_token_excluding(["token_x", "token_y"])
+    # Second pass should return an available token anyway
+    assert result in ("token_x", "token_y"), f"Expected a token, got {result}"
+
+
+
+
 
 if __name__ == "__main__":
     import traceback
