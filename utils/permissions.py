@@ -55,3 +55,24 @@ def admin_only():
             raise app_commands.errors.CheckFailure("Admin permissions required")
         return result
     return app_commands.check(predicate)
+
+
+def owner_only():
+    """Decorator that restricts a command to the IDs defined in BOT_OWNER_ID in .env."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        import os
+        # Prioritize BOT_OWNER_ID from .env
+        owner_ids = [x.strip() for x in os.getenv("BOT_OWNER_ID", "").split(",") if x.strip()]
+        
+        # If not set in .env, fallback to guild owner for safety
+        if not owner_ids:
+            if interaction.guild and interaction.user.id == interaction.guild.owner_id:
+                return True
+            raise app_commands.errors.CheckFailure("This command is restricted to the bot owner.")
+
+        if str(interaction.user.id) in owner_ids:
+            return True
+            
+        raise app_commands.errors.CheckFailure("This command is restricted to the bot owner.")
+    return app_commands.check(predicate)
+

@@ -52,34 +52,13 @@ def check_video_validity(posted_at_str: str) -> dict:
         
     now = datetime.now(timezone.utc)
     age = now - posted_at
-    
-    # 24 hour limit
-    if age > timedelta(hours=24):
-        return {
-            "valid": False,
-            "is_final": True,
-            "remaining": "0h 0m",
-            "status": "FINAL",
-            "message": "❌ This video was posted more than 24 hours ago."
-        }
-    
-    # If age is negative (posted in "future" due to minor clock drifts)
-    if age < timedelta(0):
-        remaining = timedelta(hours=24)
-        age_for_display = "Younger than 1 minute"
-    else:
-        remaining = timedelta(hours=24) - age
-        age_for_display = f"{age.seconds // 3600}h {(age.seconds % 3600) // 60}m ago"
-
-    hours = int(remaining.total_seconds() // 3600)
-    minutes = int((remaining.total_seconds() % 3600) // 60)
-    
+    # No more 24 hour limit — videos track indefinitely until admin stops campaign
     return {
         "valid": True,
         "is_final": False,
-        "remaining": f"{hours}h {minutes}m",
+        "remaining": "∞",
         "status": "TRACKING",
-        "expires_at": (posted_at + timedelta(hours=24)).isoformat()
+        "expires_at": None  # No expiration
     }
 
 
@@ -217,7 +196,7 @@ class SubmissionCommands(commands.Cog):
                     views_unknown = result.get("views_unknown", False)
                     
                     # Determine indicators
-                    if views_unknown or views < 0:
+                    if views_unknown:
                         v_text = "⏳ Pending..."
                     elif result.get("estimated"):
                         v_text = f"⚠️ ~{views:,}"
@@ -308,7 +287,7 @@ class SubmissionCommands(commands.Cog):
                     else:
                         views = prev_result.get("views", 0)
                         likes = prev_result.get("likes", 0)
-                        if views < 0 or prev_result.get("views_unknown"):
+                        if prev_result.get("views_unknown"):
                             icon = "⏳"
                             v_str = "Pending"
                         else:
@@ -379,7 +358,7 @@ class SubmissionCommands(commands.Cog):
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
                     
-                    if views < 0 or result.get("views_unknown"):
+                    if result.get("views_unknown"):
                         v_icon = "⏳ "
                         v_display = "Pending..."
                     elif result.get("estimated"):
@@ -640,33 +619,12 @@ class SubmissionCommands(commands.Cog):
                 elif v['is_final']:
                     views = v['final_views']
                     likes = v['final_likes']
-                    status_text = "🔴 **FINAL** (24h elapsed)"
+                    status_text = "🔴 **FINAL**"
                 else:
                     metrics = await self.db.get_latest_metrics(v['id'])
                     views = metrics.get('views', 0) if metrics else 0
                     likes = metrics.get('likes', 0) if metrics else 0
-                    # Time remaining
-                    exp = v.get('tracking_expires_at')
-                    if exp:
-                        try:
-                            from datetime import timezone as tz
-                            exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
-                            if exp_dt.tzinfo is None:
-                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                            
-                            now_utc = datetime.now(timezone.utc)
-                            remaining = exp_dt - now_utc
-                            if remaining.total_seconds() > 0:
-                                hours = int(remaining.total_seconds() // 3600)
-                                minutes = int((remaining.total_seconds() % 3600) // 60)
-                                rem = f"{hours}h {minutes}m"
-                            else:
-                                rem = "0h 0m"
-                        except Exception:
-                            rem = "N/A"
-                        status_text = f"🟢 **TRACKING** — {rem} remaining"
-                    else:
-                        status_text = "🟢 **TRACKING**"
+                    status_text = "🟢 **TRACKING**"
 
                 total_views += views
                 embed.add_field(

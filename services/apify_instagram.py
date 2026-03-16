@@ -510,7 +510,7 @@ class ApifyInstagramService:
         # Views can be None (PARTIAL) or int (SUCCESS)
         has_real_views = views is not None
         if views is None:
-            views = -1
+            views = 0
 
         caption = classification.get("caption", "")
 

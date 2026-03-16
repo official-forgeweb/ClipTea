@@ -3,7 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from database.manager import DatabaseManager
-from utils.permissions import admin_only
+from utils.permissions import admin_only, owner_only
 from utils.id_generator import generate_campaign_id
 from utils.formatters import (
     format_currency, format_number, format_duration, format_timestamp,
@@ -494,46 +494,48 @@ class AdminCommands(commands.Cog):
 
         # 2. Process data for summary and CSV
         user_data = {}
-        total_campaign_views = 0
+        total_overall_views = 0
         
-        for row in rows:
-            uid = row['discord_user_id']
-            views = row['video_views']
+        # Get unique users in this campaign
+        unique_uids = list(set([row['discord_user_id'] for row in rows]))
+        
+        for uid in unique_uids:
+            # Fetch OVERALL stats for this user right from the DB as requested
+            stats = await self.db.get_user_all_time_stats(uid)
+            overall_views = stats.get('total_views', 0)
+            overall_likes = stats.get('total_likes', 0)
             
-            if uid not in user_data:
-                member_name = f"User {uid}"
-                try:
-                    if interaction.guild:
-                        member = interaction.guild.get_member(int(uid))
-                        if member:
-                            member_name = member.name
-                        else:
-                            user = self.bot.get_user(int(uid))
-                            if user:
-                                member_name = user.name
-                except Exception:
-                    pass
+            user_rows = [r for r in rows if r['discord_user_id'] == uid]
+            first_row = user_rows[0]
+            
+            # Group unique accounts and unique video URLs (but ignore their counts as requested)
+            account_handles = list(set([f"@{r['author_username']}" for r in user_rows if r['author_username']]))
+            video_urls = [r['video_url'] for r in user_rows]
+            
+            member_name = f"User {uid}"
+            try:
+                if interaction.guild:
+                    member = interaction.guild.get_member(int(uid))
+                    if member:
+                        member_name = member.name
+                    else:
+                        user = self.bot.get_user(int(uid))
+                        if user:
+                            member_name = user.name
+            except Exception:
+                pass
 
-                user_data[uid] = {
-                    'discord_name': member_name,
-                    'accounts': {},
-                    'videos': [],
-                    'total_views': 0,
-                    'crypto_type': row['crypto_type'] or "Not Set",
-                    'crypto_address': row['crypto_address'] or "N/A"
-                }
+            user_data[uid] = {
+                'discord_name': member_name,
+                'overall_views': overall_views,
+                'overall_likes': overall_likes,
+                'account_handles': account_handles,
+                'video_urls': video_urls,
+                'crypto_type': first_row['crypto_type'] or "Not Set",
+                'crypto_address': first_row['crypto_address'] or "N/A"
+            }
+            total_overall_views += overall_views
 
-            acc_key = f"{row['platform'].upper()}: @{row['author_username']}"
-            if acc_key not in user_data[uid]['accounts']:
-                user_data[uid]['accounts'][acc_key] = 0
-            user_data[uid]['accounts'][acc_key] += views
-
-            user_data[uid]['videos'].append({
-                'url': row['video_url'],
-                'views': views
-            })
-            user_data[uid]['total_views'] += views
-            total_campaign_views += views
 
         # 3. Create Summary Embed
         embed = discord.Embed(
@@ -543,33 +545,31 @@ class AdminCommands(commands.Cog):
         )
         
         embed.add_field(name="👥 Total Clippers", value=str(len(user_data)), inline=True)
-        embed.add_field(name="👁️ Total Views", value=format_number(total_campaign_views), inline=True)
-        embed.add_field(name="💰 Total Payout", value=format_currency(calculate_earnings(total_campaign_views, rate)), inline=True)
+        embed.add_field(name="👁️ Total Overall Views", value=format_number(total_overall_views), inline=True)
+        embed.add_field(name="💰 Total Payout (All-time)", value=format_currency(calculate_earnings(total_overall_views, rate)), inline=True)
 
-        # Show top users or first few if many
         summary_text = ""
-        # Sort users by total views
-        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['total_views'], reverse=True)
+        # Sort users by overall views
+        sorted_users = sorted(user_data.items(), key=lambda x: x[1]['overall_views'], reverse=True)
         
         for uid, data in sorted_users[:15]: # Show top 15 in embed
-            earned = calculate_earnings(data['total_views'], rate)
-            acc_list = ", ".join([f"{k} ({format_number(v)})" for k, v in data['accounts'].items()])
+            earned = calculate_earnings(data['overall_views'], rate)
+            handles = ", ".join(data['account_handles']) if data['account_handles'] else "None"
             
-            summary_text += f"👤 <@{uid}>\n"
-            summary_text += f"└ 🔗 {acc_list}\n"
-            summary_text += f"└ 💵 Earned: **{format_currency(earned)}** ({format_number(data['total_views'])} views)\n\n"
+            summary_text += f"👤 <@{uid}> │ handles: `{handles}`\n"
+            summary_text += f"└ 👁️ **{format_number(data['overall_views'])}** overall views │ {format_currency(earned)}\n\n"
+
 
         if not summary_text:
             summary_text = "No submission data available."
             
         if len(user_data) > 15:
-            summary_text += f"*...and {len(user_data) - 15} more clippers in the CSV file.*"
+            summary_text += f"\n*...and {len(user_data) - 15} more clippers in the CSV file.*"
 
         if len(summary_text) > 1024:
-            summary_text = summary_text[:950] + "\n\n*(Summary truncated, see CSV for full details)*"
-
+            summary_text = summary_text[:950] + "\n\n*(Summary truncated)*"
             
-        embed.add_field(name="📊 Clipper Breakdown", value=summary_text, inline=False)
+        embed.add_field(name="📊 Overall Views Breakdown", value=summary_text, inline=False)
 
         # 4. Define Download Button View
         class ExportView(discord.ui.View):
@@ -586,33 +586,26 @@ class AdminCommands(commands.Cog):
                 
                 output = io.StringIO()
                 headers = [
-                    'Discord Name', 'Discord ID', 'Total Views', 'Earnings ($)', 
-                    'Crypto Type', 'Address', 'Account Breakdown', 'Uploaded Videos', 'Video Views'
+                    'Discord Name', 'Discord ID', 'Overall Views', 'Overall Likes', 'Total Earnings ($)', 
+                    'Crypto Type', 'Address', 'Account Handles', 'Video Links'
                 ]
                 writer = csv.DictWriter(output, fieldnames=headers)
                 writer.writeheader()
                 
-                for uid_str, d in sorted(self.data.items(), key=lambda x: x[1]['total_views'], reverse=True):
-                    # Format accounts for CSV: next line separator
-                    breakdown = "\n".join([
-                        f"{k} ({v})" 
-                        for k, v in d['accounts'].items()
-                    ])
-                    
-                    video_urls = "\n".join([v['url'] for v in d['videos']])
-                    video_views = "\n".join([str(v['views']) for v in d['videos']])
-                    
+                for uid_str, d in sorted(self.data.items(), key=lambda x: x[1]['overall_views'], reverse=True):
                     writer.writerow({
                         'Discord Name': d['discord_name'],
                         'Discord ID': uid_str,
-                        'Total Views': d['total_views'],
-                        'Earnings ($)': f"{calculate_earnings(d['total_views'], self.rate):.2f}",
+                        'Overall Views': d['overall_views'],
+                        'Overall Likes': d['overall_likes'],
+                        'Total Earnings ($)': f"{calculate_earnings(d['overall_views'], self.rate):.2f}",
                         'Crypto Type': d['crypto_type'],
                         'Address': d['crypto_address'],
-                        'Account Breakdown': breakdown,
-                        'Uploaded Videos': video_urls,
-                        'Video Views': video_views
+                        'Account Handles': ", ".join(d['account_handles']),
+                        'Video Links': "\n".join(d['video_urls'])
                     })
+
+
                 
                 file_data = output.getvalue()
                 file_obj = io.BytesIO(file_data.encode('utf-8'))
@@ -748,8 +741,9 @@ class AdminCommands(commands.Cog):
     # ── FORCE UPDATE VIEWS ────────────────────────────
     @app_commands.command(name="force_update", description="Force update views for all videos in active campaigns")
 
+    @app_commands.describe(user="Optional: update only this user's videos")
     @admin_only()
-    async def force_update(self, interaction: discord.Interaction):
+    async def force_update(self, interaction: discord.Interaction, user: discord.User = None):
         try:
             await interaction.response.defer(ephemeral=False)
         except discord.errors.NotFound:
@@ -760,12 +754,26 @@ class AdminCommands(commands.Cog):
             await interaction.followup.send("❌ PeriodicScraper module not loaded.", ephemeral=True)
             return
 
-        await interaction.followup.send("⏳ **Starting force update.** Scraping all tracked videos... This may take a while.", ephemeral=False)
+        if user:
+            await interaction.followup.send(
+                f"⏳ **Starting force update** for <@{user.id}>'s videos... This may take a while.",
+                ephemeral=False
+            )
+        else:
+            await interaction.followup.send(
+                "⏳ **Starting force update.** Scraping all tracked videos... This may take a while.",
+                ephemeral=False
+            )
         
         try:
-            summary = await scraper_cog.scrape_all_tracking_videos()
+            if user:
+                summary = await scraper_cog.scrape_user_tracking_videos(str(user.id))
+            else:
+                summary = await scraper_cog.scrape_all_tracking_videos()
+
+            title = f"✅ Force Update Complete — <@{user.id}>" if user else "✅ Force Update Complete"
             embed = discord.Embed(
-                title="✅ Force Update Complete",
+                title=title,
                 color=discord.Color.green()
             )
             embed.add_field(
@@ -783,7 +791,7 @@ class AdminCommands(commands.Cog):
                     value="\n".join(summary['errors'][:3]),
                     inline=False
                 )
-            await interaction.channel.send(content=f"<@{interaction.user.id}>", embed=embed)
+            await interaction.followup.send(content=f"<@{interaction.user.id}>", embed=embed)
         except Exception as e:
             await interaction.followup.send(f"❌ Error during force update: {e}", ephemeral=False)
 
@@ -1023,6 +1031,273 @@ class AdminCommands(commands.Cog):
                     )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ── EDIT VIEWS (Manual) ───────────────────────────
+    @app_commands.command(name="edit_views", description="Admin: Manually edit views for a user's video")
+
+    @app_commands.describe(user="The user whose video views to edit")
+    @owner_only()
+    @app_commands.default_permissions(administrator=True)
+    async def edit_views(self, interaction: discord.Interaction, user: discord.User):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.NotFound:
+            return
+            
+        # Permission is handled by @owner_only() decorator
+
+        # Fetch all videos for this user (not just tracking — include all)
+        print(f"[DEBUG edit_views] Fetching videos for user {user.id} ({type(user.id)})")
+        videos = await self.db.get_user_videos(str(user.id))
+        print(f"[DEBUG edit_views] Fetched {len(videos)} videos")
+        if not videos:
+            await interaction.followup.send(
+                f"❌ No videos found for <@{user.id}>.", ephemeral=True
+            )
+            return
+
+        # Build video list with current views
+        import aiosqlite
+        video_options = []
+        video_data = {}  # Map value -> video info
+
+        for v in videos[:25]:  # Discord select max 25 options
+            video_id = v['id']
+            url = v['video_url']
+            status = v.get('status', 'unknown')
+
+            # Get current views from latest snapshot
+            latest = await self.db.get_latest_metrics(video_id)
+            current_views = latest.get('views', 0) if latest else 0
+            current_likes = latest.get('likes', 0) if latest else 0
+            current_comments = latest.get('comments', 0) if latest else 0
+
+            # Also check final views if it somehow got marked as such
+            if v.get('is_final'):
+                current_views = v.get('final_views', current_views) or current_views
+                current_likes = v.get('final_likes', current_likes) or current_likes
+                current_comments = v.get('final_comments', current_comments) or current_comments
+
+            # Extract shortcode for display
+            shortcode = url.split('/reel/')[-1].split('/')[0].split('?')[0] if '/reel/' in url else url[-25:]
+            label = f"📊 {current_views:,} views — .../{shortcode}"
+            if len(label) > 100:
+                label = label[:97] + "..."
+
+            description = f"👍 {current_likes:,} likes │ 💬 {current_comments:,} comments │ {status}"
+            if len(description) > 100:
+                description = description[:97] + "..."
+
+            key = str(video_id)
+            video_data[key] = {
+                'id': video_id,
+                'url': url,
+                'shortcode': shortcode,
+                'views': current_views,
+                'likes': current_likes,
+                'comments': current_comments,
+                'status': status,
+            }
+            video_options.append(
+                discord.SelectOption(
+                    label=label,
+                    description=description,
+                    value=key
+                )
+            )
+
+        # Create the select view
+        view = VideoSelectView(self.db, user, video_data, video_options)
+        embed = discord.Embed(
+            title=f"✏️ Edit Views — {user.display_name}",
+            description=f"Select a video from <@{user.id}> to edit its views.\n\n"
+                        f"**{len(video_options)}** video(s) found.",
+            color=discord.Color.blue()
+        )
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class VideoSelectView(discord.ui.View):
+    """Dropdown to select which video to edit, and button for overall totals."""
+
+    def __init__(self, db, user: discord.User, video_data: dict, options: list):
+        super().__init__(timeout=120)
+        self.db = db
+        self.user = user
+        self.video_data = video_data
+
+        select = discord.ui.Select(
+            placeholder="Select a specific video to edit...",
+            options=options,
+            min_values=1,
+            max_values=1,
+            row=0
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    @discord.ui.button(label="✏️ Edit Overall Totals (All-time)", style=discord.ButtonStyle.secondary, row=1)
+    async def edit_overall(self, interaction: discord.Interaction, button: discord.ui.Button):
+        stats = await self.db.get_user_all_time_stats(str(self.user.id))
+        modal = EditOverallStatsModal(self.db, self.user, stats)
+        await interaction.response.send_modal(modal)
+
+    async def on_select(self, interaction: discord.Interaction):
+        selected_key = interaction.data['values'][0]
+        video = self.video_data.get(selected_key)
+        if not video:
+            await interaction.response.send_message("❌ Video not found.", ephemeral=True)
+            return
+
+        # Open modal with current values pre-filled
+        modal = EditViewsModal(self.db, video, self.user)
+        await interaction.response.send_modal(modal)
+
+
+class EditOverallStatsModal(discord.ui.Modal):
+    """Modal to edit the user's total counts across everywhere."""
+
+    def __init__(self, db, user: discord.User, stats: dict):
+        super().__init__(title=f"Edit Overall — {user.display_name}")
+        self.db = db
+        self.user = user
+
+        self.views_input = discord.ui.TextInput(
+            label="Total All-time Views",
+            placeholder="Enter desired total overall views",
+            default=str(stats['total_views']),
+            required=True
+        )
+        self.likes_input = discord.ui.TextInput(
+            label="Total All-time Likes",
+            placeholder="Enter desired total overall likes",
+            default=str(stats['total_likes']),
+            required=True
+        )
+        self.add_item(self.views_input)
+        self.add_item(self.likes_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_total_views = int(self.views_input.value.replace(',', '').strip())
+            new_total_likes = int(self.likes_input.value.replace(',', '').strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+            return
+
+        success = await self.db.set_user_overall_stats(str(self.user.id), new_total_views, new_total_likes)
+        
+        if success:
+            embed = discord.Embed(
+                title="✅ Overall Stats Adjusted",
+                description=f"User <@{self.user.id}> stats updated directly in database.\n"
+                            f"Leaderboards and exports will reflect this immediately.",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="New Total Views", value=f"{new_total_views:,}")
+            embed.add_field(name="New Total Likes", value=f"{new_total_likes:,}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to update stats. User must be in at least one campaign.", ephemeral=True)
+
+
+
+class EditViewsModal(discord.ui.Modal):
+    """Modal to type new views/likes/comments values."""
+
+    def __init__(self, db, video: dict, user: discord.User):
+        super().__init__(title=f"Edit Views — .../{video['shortcode'][:30]}")
+        self.db = db
+        self.video = video
+        self.user = user
+
+        self.views_input = discord.ui.TextInput(
+            label="Views",
+            placeholder="Enter new view count",
+            default=str(video['views']),
+            required=True,
+            style=discord.TextStyle.short
+        )
+        self.likes_input = discord.ui.TextInput(
+            label="Likes",
+            placeholder="Enter new likes count",
+            default=str(video['likes']),
+            required=False,
+            style=discord.TextStyle.short
+        )
+        self.comments_input = discord.ui.TextInput(
+            label="Comments",
+            placeholder="Enter new comments count",
+            default=str(video['comments']),
+            required=False,
+            style=discord.TextStyle.short
+        )
+
+        self.add_item(self.views_input)
+        self.add_item(self.likes_input)
+        self.add_item(self.comments_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_views = int(self.views_input.value.replace(',', '').strip())
+            new_likes = int((self.likes_input.value or str(self.video['likes'])).replace(',', '').strip())
+            new_comments = int((self.comments_input.value or str(self.video['comments'])).replace(',', '').strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid number. Please enter numeric values only.", ephemeral=True
+            )
+            return
+
+        old_views = self.video['views']
+        old_likes = self.video['likes']
+        old_comments = self.video['comments']
+
+        # Save new snapshot
+        await self.db.save_metric_snapshot(
+            video_id=self.video['id'],
+            views=new_views,
+            likes=new_likes,
+            comments=new_comments,
+            extra_data="admin_manual_edit"
+        )
+
+        # IMPORTANT: Force update the video record metrics so it reflects in all-time stats/leaderboard
+        await self.db.update_video_metrics(
+            video_id=self.video['id'],
+            views=new_views,
+            likes=new_likes,
+            comments=new_comments
+        )
+
+
+        print(f"[ADMIN] ✏️ Manual edit for video {self.video['id']} ({self.video['shortcode']}): "
+              f"views {old_views:,} → {new_views:,}, "
+              f"likes {old_likes:,} → {new_likes:,}, "
+              f"comments {old_comments:,} → {new_comments:,}")
+
+        embed = discord.Embed(
+            title="✅ Views Updated",
+            description=f"Video for <@{self.user.id}>: `.../{self.video['shortcode']}`",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="Views",
+            value=f"{old_views:,} → **{new_views:,}**",
+            inline=True
+        )
+        embed.add_field(
+            name="Likes",
+            value=f"{old_likes:,} → **{new_likes:,}**",
+            inline=True
+        )
+        embed.add_field(
+            name="Comments",
+            value=f"{old_comments:,} → **{new_comments:,}**",
+            inline=True
+        )
+        embed.set_footer(text="Saved as new metric snapshot (admin_manual_edit)")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

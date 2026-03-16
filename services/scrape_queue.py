@@ -489,8 +489,13 @@ class ScrapeQueue:
             if result.get("views", 0) > 0 or result.get("likes", 0) > 0:
                 await self._save_periodic_result(job, result)
 
-        # Update last_scraped_at
-        if not result.get("error") or result.get("views", 0) > 0:
+        # Update last_scraped_at — always update for periodic jobs so they
+        # don't get re-queued on restart (queue persistence via DB)
+        if not job.result_event:
+            # Periodic job — always mark as scraped
+            await self._update_last_scraped(job)
+        elif not result.get("error") or result.get("views", 0) > 0:
+            # /submit job — only mark on success
             await self._update_last_scraped(job)
 
     async def _process_retry_queue(self):
@@ -599,16 +604,27 @@ class ScrapeQueue:
             # Find the video record by URL
             video = await self.db.get_video_by_url(job.video_url)
             if video and not video.get("is_final"):
+                new_views = int(result.get("views", 0) or 0)
+
+                # View regression protection: don't save if new views < previous
+                latest = await self.db.get_latest_metrics(video["id"])
+                if latest:
+                    old_views = int(latest.get("views", 0) or 0)
+                    if old_views > 0 and new_views < old_views:
+                        print(f"[QUEUE] ⚠️ View regression blocked for {job.video_url[:50]} "
+                              f"(old={old_views:,}, new={new_views:,}) — keeping old record")
+                        return
+
                 await self.db.save_metric_snapshot(
                     video_id=video["id"],
-                    views=result.get("views", 0),
+                    views=new_views,
                     likes=result.get("likes", 0),
                     comments=result.get("comments", 0),
                     shares=result.get("shares", 0),
                 )
                 est_marker = " (estimated)" if result.get("estimated") else ""
                 print(f"[QUEUE] 💾 Saved periodic result for {job.video_url[:50]} "
-                      f"(views={result.get('views', 0)}{est_marker})")
+                      f"(views={new_views}{est_marker})")
         except Exception as e:
             print(f"[QUEUE] DB save error: {e}")
 

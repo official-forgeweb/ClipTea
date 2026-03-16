@@ -447,7 +447,9 @@ class DatabaseManager:
                            ORDER BY sv.submitted_at DESC"""
                 params = (discord_user_id,)
             async with db.execute(query, params) as cursor:
-                return [dict(row) for row in await cursor.fetchall()]
+                results = [dict(row) for row in await cursor.fetchall()]
+                print(f"[DEBUG] get_user_videos({discord_user_id}) returned {len(results)} videos")
+                return results
 
     async def get_video_by_url(self, video_url: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -489,6 +491,20 @@ class DatabaseManager:
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
+    async def get_user_tracking_videos(self, discord_user_id: str) -> List[Dict[str, Any]]:
+        """Get all actively tracked videos for a specific user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT sv.*, c.name as campaign_name FROM submitted_videos sv
+                   JOIN campaigns c ON sv.campaign_id = c.id
+                   WHERE sv.status = 'tracking' AND c.status = 'active' AND sv.is_final = 0
+                     AND sv.discord_user_id = ?
+                   ORDER BY sv.submitted_at""",
+                (discord_user_id,)
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
     async def mark_video_final(self, video_id: int, views: int, likes: int, comments: int) -> bool:
         """Mark a video as final and save its terminal metrics."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -500,6 +516,19 @@ class DatabaseManager:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def update_video_metrics(self, video_id: int, views: int, likes: int, comments: int) -> bool:
+        """Force update the 'final' metrics in submitted_videos table for immediate reflection in stats."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """UPDATE submitted_videos 
+                   SET final_views = ?, final_likes = ?, final_comments = ?
+                   WHERE id = ?""",
+                (views, likes, comments, video_id)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
 
     async def update_video_status(self, video_id: int, status: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
@@ -835,3 +864,66 @@ class DatabaseManager:
                 (datetime.now().isoformat(), video_url),
             )
             await db.commit()
+
+    async def set_user_overall_stats(self, discord_user_id: str, total_views: int, total_likes: int) -> bool:
+        """
+        Adjusts user stats by managing a virtual 'manual' video entry that accounts for the 
+        difference between video-based stats and the desired manual total.
+        """
+        import time
+        stats = await self.get_user_all_time_stats(discord_user_id)
+        current_total_views = stats['total_views']
+        current_total_likes = stats['total_likes']
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            # 1. Check if we already have a manual adjustment row for this user
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, final_views, final_likes FROM submitted_videos WHERE discord_user_id = ? AND platform = 'manual' LIMIT 1",
+                (discord_user_id,)
+            ) as cursor:
+                adj_row = await cursor.fetchone()
+                
+            current_adj_views = adj_row['final_views'] if adj_row else 0
+            current_adj_likes = adj_row['final_likes'] if adj_row else 0
+            
+            # The sum without the adjustment row is:
+            base_views = current_total_views - current_adj_views
+            base_likes = current_total_likes - current_adj_likes
+            
+            # New adjustment needed to reach target
+            new_adj_views = total_views - base_views
+            new_adj_likes = total_likes - base_likes
+            
+            if adj_row:
+                # Update existing adjustment row
+                await db.execute(
+                    "UPDATE submitted_videos SET final_views = ?, final_likes = ? WHERE id = ?",
+                    (new_adj_views, new_adj_likes, adj_row['id'])
+                )
+            else:
+                # Create new adjustment row — need a campaign ID
+                async with db.execute(
+                    "SELECT campaign_id FROM campaign_members WHERE discord_user_id = ? LIMIT 1",
+                    (discord_user_id,)
+                ) as cur:
+                    c_row = await cur.fetchone()
+                    if not c_row:
+                        # Fallback: find any campaign
+                        async with db.execute("SELECT id FROM campaigns LIMIT 1") as cur2:
+                            row2 = await cur2.fetchone()
+                            if not row2: return False
+                            cid = row2[0]
+                    else:
+                        cid = c_row[0]
+                
+                await db.execute(
+                    """INSERT INTO submitted_videos 
+                       (campaign_id, discord_user_id, platform, video_url, video_id, author_username, is_final, final_views, final_likes, status)
+                       VALUES (?, ?, 'manual', ?, 'ADJUSTMENT', 'Manual Manager', 1, ?, ?, 'tracking')""",
+                    (cid, discord_user_id, f"MANUAL_ADJUSTMENT_{discord_user_id}", new_adj_views, new_adj_likes)
+                )
+            
+            await db.commit()
+            return True
+

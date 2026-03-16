@@ -10,14 +10,8 @@ class PeriodicScraper(commands.Cog):
     """Background task that adds tracked videos to the scrape queue
     with smart intervals based on video age."""
 
-    # ── Smart interval table ─────────────────────────
-    # age_hours_max → scrape_every_hours
-    INTERVALS = [
-        (24, 3),      # 0-24 h old  → every 3 hours
-        (72, 6),      # 24-72 h old → every 6 hours
-        (168, 12),    # 72-168 h    → every 12 hours
-        (float('inf'), 24),  # 168+ h → every 24 hours
-    ]
+    # ── Scrape interval: every 6 hours for all videos ──
+    SCRAPE_EVERY_HOURS = 6
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -30,7 +24,7 @@ class PeriodicScraper(commands.Cog):
 
     # ── Main loop ─────────────────────────────────────
 
-    @tasks.loop(minutes=60)
+    @tasks.loop(minutes=360)  # 6 hours
     async def periodic_scrape(self):
         """Check all tracked videos and add due ones to the scrape queue."""
         print("[SCRAPER] Starting periodic check cycle...")
@@ -47,11 +41,11 @@ class PeriodicScraper(commands.Cog):
                 except ValueError:
                     pass
 
-            # Skip the very first run on startup
+            # No startup skip — _is_due_for_scrape() uses last_scraped_at
+            # so recently scraped videos won't be re-queued on restart
             if not self._initialized:
                 self._initialized = True
-                print("[SCRAPER] Startup complete. First scheduled check will run later.")
-                return
+                print("[SCRAPER] First cycle — checking which videos are due...")
 
             # Get the scrape queue from the bot
             queue = getattr(self.bot, 'scrape_queue', None)
@@ -143,33 +137,8 @@ class PeriodicScraper(commands.Cog):
             video_url = video["video_url"]
             video_id = video["id"]
 
-            # ── Check for expiration ──────────────────
-            exp_at_str = video.get('tracking_expires_at')
-            if exp_at_str:
-                try:
-                    exp_at = datetime.fromisoformat(exp_at_str.replace("Z", "+00:00"))
-                    if exp_at.tzinfo is None:
-                        exp_at = exp_at.replace(tzinfo=timezone.utc)
-
-                    if now > exp_at:
-                        # Add a final scrape job (high priority so it runs sooner)
-                        queue.add_periodic_job(
-                            video_url=video_url,
-                            discord_user_id=video.get('discord_user_id', ''),
-                            campaign_id=video.get('campaign_id', ''),
-                        )
-
-                        # Get the latest known metrics for marking final
-                        latest = await self.db.get_latest_metrics(video_id)
-                        final_v = latest.get('views', 0) if latest else 0
-                        final_l = latest.get('likes', 0) if latest else 0
-                        final_c = latest.get('comments', 0) if latest else 0
-
-                        await self.db.mark_video_final(video_id, final_v, final_l, final_c)
-                        summary["expired"] += 1
-                        continue
-                except Exception as e:
-                    print(f"[SCRAPER] Expiration error for {video_id}: {e}")
+            # ── Expiration removed ────────────────────
+            # Videos track indefinitely until admin stops campaign.
 
             # ── Smart interval check ──────────────────
             if not self._is_due_for_scrape(video, now):
@@ -188,27 +157,7 @@ class PeriodicScraper(commands.Cog):
         return summary
 
     def _is_due_for_scrape(self, video: dict, now: datetime) -> bool:
-        """Check if a video is due for re-scraping based on its age."""
-        # Determine video age
-        posted_at_str = video.get('posted_at') or video.get('submitted_at', '')
-        if posted_at_str:
-            try:
-                posted_at = datetime.fromisoformat(posted_at_str.replace("Z", "+00:00"))
-                if posted_at.tzinfo is None:
-                    posted_at = posted_at.replace(tzinfo=timezone.utc)
-                age_hours = (now - posted_at).total_seconds() / 3600
-            except Exception:
-                age_hours = 48  # Default if unparseable
-        else:
-            age_hours = 48  # Default
-
-        # Determine scrape interval for this video's age
-        scrape_every_hours = 24  # default fallback
-        for max_age, interval in self.INTERVALS:
-            if age_hours <= max_age:
-                scrape_every_hours = interval
-                break
-
+        """Check if a video is due for re-scraping (every 6 hours)."""
         # Check last_scraped_at
         last_scraped_str = video.get('last_scraped_at', '')
         if not last_scraped_str:
@@ -219,7 +168,7 @@ class PeriodicScraper(commands.Cog):
             if last_scraped.tzinfo is None:
                 last_scraped = last_scraped.replace(tzinfo=timezone.utc)
             hours_since = (now - last_scraped).total_seconds() / 3600
-            return hours_since >= scrape_every_hours
+            return hours_since >= self.SCRAPE_EVERY_HOURS
         except Exception:
             return True  # If we can't parse, scrape it
 
@@ -258,6 +207,40 @@ class PeriodicScraper(commands.Cog):
             "failed": failed,
             "total_videos": len(videos),
             "errors": list(set(errors))[:10]  # Limit error list
+        }
+
+    async def scrape_user_tracking_videos(self, discord_user_id: str) -> dict:
+        """Force scrape only a specific user's tracked videos via the queue."""
+        videos = await self.db.get_user_tracking_videos(discord_user_id)
+        if not videos:
+            return {"successful": 0, "failed": 0, "total_videos": 0, "errors": []}
+
+        queue = getattr(self.bot, 'scrape_queue', None)
+        if not queue:
+            print("[SCRAPER] ⚠️ Scrape queue not available for user force update")
+            return {"successful": 0, "failed": 0, "total_videos": len(videos), "errors": ["Scrape queue not ready"]}
+
+        print(f"[SCRAPER] 🚀 Force update for user {discord_user_id}: {len(videos)} videos")
+
+        video_urls = [v['video_url'] for v in videos]
+        results = await queue.submit_bulk_and_track(video_urls)
+
+        successful = 0
+        failed = 0
+        errors = []
+
+        for res in results:
+            if res.get("error") and res.get("views", 0) == 0:
+                failed += 1
+                errors.append(str(res.get("error")))
+            else:
+                successful += 1
+
+        return {
+            "successful": successful,
+            "failed": failed,
+            "total_videos": len(videos),
+            "errors": list(set(errors))[:10]
         }
 
     @periodic_scrape.before_loop

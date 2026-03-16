@@ -107,6 +107,7 @@ class CampaignBot(commands.Bot):
             "cogs.dashboard_commands",
             "cogs.quick_update",
             "cogs.help_commands",
+            "cogs.debug_cog",
         ]
 
 

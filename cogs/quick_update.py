@@ -118,6 +118,33 @@ class QuickUpdateCog(commands.Cog):
                 new_likes = result["likes"]
                 new_comments = result["comments"]
                 
+                # View regression protection: don't save if views went down
+                if old_views_num > 0 and new_views < old_views_num:
+                    shortcode = extract_shortcode(url) or url[-20:]
+                    print(
+                        f"{i:<4} "
+                        f"...{shortcode:<52} "
+                        f"{old_views_display:<12} "
+                        f"{new_views:>10,}  "
+                        f"⚠️ REGRESSION BLOCKED (old={old_views_num:,})"
+                    )
+                    
+                    results.append({
+                        "url": url,
+                        "shortcode": shortcode,
+                        "old_views": old_views_display,
+                        "new_views": old_views_num,  # Keep old views
+                        "new_likes": new_likes,
+                        "diff_text": "(kept old)",
+                        "success": True,
+                        "regression": True
+                    })
+                    success_count += 1
+                    
+                    if i < len(videos):
+                        await asyncio.sleep(2)
+                    continue
+                
                 # Calculate difference
                 if old_views_num > 0:
                     diff = new_views - old_views_num
@@ -206,12 +233,19 @@ class QuickUpdateCog(commands.Cog):
         table_lines = []
         for r in results:
             if r["success"]:
-                table_lines.append(
-                    f"✅ `{r['shortcode']}` — "
-                    f"**{r['new_views']:,}** views "
-                    f"(was {r['old_views']}) "
-                    f"{r['diff_text']}"
-                )
+                if r.get("regression"):
+                    table_lines.append(
+                        f"⚠️ `{r['shortcode']}` — "
+                        f"**{r['new_views']:,}** views "
+                        f"(kept old, API returned lower)"
+                    )
+                else:
+                    table_lines.append(
+                        f"✅ `{r['shortcode']}` — "
+                        f"**{r['new_views']:,}** views "
+                        f"(was {r['old_views']}) "
+                        f"{r['diff_text']}"
+                    )
             else:
                 table_lines.append(
                     f"❌ `{r['shortcode']}` — {r['error']}"
