@@ -105,6 +105,7 @@ class CampaignBot(commands.Bot):
             "cogs.payment_commands",
             "cogs.stats_commands",
             "cogs.dashboard_commands",
+            "cogs.quick_update",
             "cogs.help_commands",
         ]
 

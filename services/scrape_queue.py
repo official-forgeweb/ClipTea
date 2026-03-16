@@ -349,11 +349,9 @@ class ScrapeQueue:
 
         # Check 2: Got response but views=0 AND likes=0 with no error
         #           (Apify returned empty data — treat as restriction)
-        views_val = result.get("views")
-        likes_val = result.get("likes")
         if (not result.get("error") and
-            (views_val is None or int(views_val or 0) in (0, -1)) and
-            (likes_val is None or int(likes_val or 0) in (0, -1)) and
+            int(result.get("views", 0) or 0) in (0, -1) and
+            int(result.get("likes", 0) or 0) in (0, -1) and
             result.get("method") not in ("estimation", "cache", "queue_timeout",
                                           "invalid_url", "embed_fallback")):
             is_restricted = True
@@ -379,10 +377,10 @@ class ScrapeQueue:
         # ═══ HANDLE BASED ON CLASSIFICATION ═══
 
         if not is_restricted and not has_error and (
-            (result.get("views") or 0) > 0 or (result.get("likes") or 0) > 0
+            result.get("views", 0) > 0 or result.get("likes", 0) > 0
         ):
             # ─── SUCCESS ───
-            if not result.get("estimated") and (result.get("views") or 0) > 0 and not is_views_unknown:
+            if not result.get("estimated") and result.get("views", 0) > 0 and not is_views_unknown:
                 # FULL success — got real views
                 print(f"[QUEUE] ✅ Full success: views={result['views']}, "
                       f"likes={result.get('likes', 0)}")
@@ -425,7 +423,7 @@ class ScrapeQueue:
             job.attempt += 1
 
             # Save any parsed data from this attempt
-            if (result.get("likes") or 0) > 0:
+            if result.get("likes", 0) > 0:
                 job.partial_result = result
 
             if job.attempt < job.max_attempts:
@@ -488,11 +486,11 @@ class ScrapeQueue:
             await self._save_periodic_result(job, result)
         elif not job.result_event and result:
             # Even with error, save if we have usable data
-            if (result.get("views") or 0) > 0 or (result.get("likes") or 0) > 0:
+            if result.get("views", 0) > 0 or result.get("likes", 0) > 0:
                 await self._save_periodic_result(job, result)
 
         # Update last_scraped_at
-        if not result.get("error") or (result.get("views") or 0) > 0:
+        if not result.get("error") or result.get("views", 0) > 0:
             await self._update_last_scraped(job)
 
     async def _process_retry_queue(self):
@@ -558,10 +556,10 @@ class ScrapeQueue:
         Capped between 15 and 120 seconds (never higher).
         """
         ranges = {
-            0: (10, 18),     # normal (was 15-25)
-            1: (20, 35),     # mild (was 30-50)
-            2: (35, 55),     # medium (was 50-80)
-            3: (55, 80),     # high — hard cap (was 80-120)
+            0: (15, 25),     # normal
+            1: (30, 50),     # mild
+            2: (50, 80),     # medium
+            3: (80, 120),    # high — hard cap
         }
         lo, hi = ranges.get(self._backoff_level, (80, 120))
         return random.uniform(lo, hi)
@@ -569,12 +567,12 @@ class ScrapeQueue:
     def _delay_description(self) -> str:
         """Human-readable description of current delay range."""
         ranges = {
-            0: "10-18s (normal)",
-            1: "20-35s (level 1)",
-            2: "35-55s (level 2)",
-            3: "55-80s (level 3 — max)",
+            0: "15-25s (normal)",
+            1: "30-50s (level 1)",
+            2: "50-80s (level 2)",
+            3: "80-120s (level 3 — max)",
         }
-        return ranges.get(self._backoff_level, "55-80s (max)")
+        return ranges.get(self._backoff_level, "80-120s (max)")
 
     # ── Helpers ────────────────────────────────────────
 
@@ -603,7 +601,7 @@ class ScrapeQueue:
             if video and not video.get("is_final"):
                 await self.db.save_metric_snapshot(
                     video_id=video["id"],
-                    views=result.get("views") or 0,
+                    views=result.get("views", 0),
                     likes=result.get("likes", 0),
                     comments=result.get("comments", 0),
                     shares=result.get("shares", 0),

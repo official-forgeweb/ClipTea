@@ -98,50 +98,6 @@ class ApifyTokenRotator:
         print(f"[TokenRotator] ⏳ All tokens cooling. Next available in {wait:.0f}s. Returning None.")
         return None
 
-    def get_next_token_excluding(self, exclude: list = None) -> Optional[str]:
-        """Get next available token, preferring ones NOT in the exclude list.
-
-        Used by the multi-method scraper so each method tries a different token.
-        Falls back to any available token if all non-excluded are cooling.
-        """
-        if not self.tokens:
-            return None
-        exclude = exclude or []
-
-        now = datetime.now()
-
-        # First pass: tokens NOT in exclude list and NOT cooling
-        for _ in range(len(self.tokens)):
-            token = self.tokens[self.current_index]
-            stats = self.token_stats[token]
-            self.current_index = (self.current_index + 1) % len(self.tokens)
-
-            if token in self.invalid_tokens:
-                continue
-            if token in exclude:
-                continue
-            if stats["cooldown_until"] and now < stats["cooldown_until"]:
-                continue
-
-            stats["requests"] += 1
-            return token
-
-        # Second pass: any available token (even if in exclude list)
-        for _ in range(len(self.tokens)):
-            token = self.tokens[self.current_index]
-            stats = self.token_stats[token]
-            self.current_index = (self.current_index + 1) % len(self.tokens)
-
-            if token in self.invalid_tokens:
-                continue
-            if stats["cooldown_until"] and now < stats["cooldown_until"]:
-                continue
-
-            stats["requests"] += 1
-            return token
-
-        return None
-
     def get_wait_time(self) -> float:
         """Seconds until the next token becomes available."""
         now = datetime.now()

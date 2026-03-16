@@ -349,26 +349,21 @@ class ApifyInstagramService:
     
     async def _call_apify(self, video_url: str, shortcode: str) -> Optional[dict]:
         """
-        Call multiple scraping methods in sequence (5-method waterfall).
-        Returns as soon as one method gets full data (with views).
-        Falls back to best partial data if no method gets views.
+        Call Apify API to scrape Instagram post.
+        Uses the run-sync-get-dataset-items endpoint with token rotation.
+        Tries primary actor first, then fallback actor.
         """
-        # Strip query params from the URL before sending to Apify
-        clean_url = video_url.split('?')[0].rstrip('/')
-
-        # Track best partial result across all methods
-        best_partial_classification = None
-        used_tokens = []  # Track tokens used so far
-
-        # ═══ METHOD 1: Primary actor (instagram-post-scraper) ═══
+        # Get token from rotator (returns None if all cooling)
         token = self.token_rotator.get_next_token()
         if not token:
             token = self.token
         if not token:
             return {"error": "No Apify tokens available (all on cooldown or none configured)"}
-        used_tokens.append(token)
 
-        print(f"[SCRAPER] 🔄 Method 1: Primary actor ({self.actor_id})")
+        # Strip query params from the URL before sending to Apify
+        clean_url = video_url.split('?')[0].rstrip('/')
+
+        # ── Method 1: Primary actor (instagram-post-scraper) ──
         result = await self._call_apify_actor(
             actor_id=self.actor_id,
             payload={"username": [clean_url], "resultsLimit": 1},
@@ -377,16 +372,22 @@ class ApifyInstagramService:
         )
 
         if result is not None:
+            # Classify the response
             classification = classify_apify_response(result, video_url)
-
+            
             if classification["type"] == "SUCCESS":
                 self.token_rotator.report_result(token, classification)
-                print(f"[SCRAPER] ✅ Method 1 success: views={classification['views']}")
                 return self._build_result(classification, method="live")
-
+            
+            # If primary actor didn't get full data, try fallback
+            # But first report the result to rotator
             self.token_rotator.report_result(token, classification)
-
-            # INVALID_URL — won't work on any actor, return immediately
+            
+            # For PARTIAL data, return what we have (no view estimation)
+            if classification["type"] == "PARTIAL":
+                return self._build_result(classification, method="apify_restricted_parsed")
+            
+            # For INVALID_URL, return immediately — won't work on any actor
             if classification["type"] == "INVALID_URL":
                 return {
                     "views": 0, "likes": 0, "comments": 0,
@@ -395,20 +396,12 @@ class ApifyInstagramService:
                     "error": classification.get("reason", "Post does not exist"),
                 }
 
-            # Track partial data
-            if classification["type"] == "PARTIAL":
-                best_partial_classification = classification
-                print(f"[SCRAPER] ⚠️ Method 1 partial: likes={classification.get('likes')}")
-
-        await asyncio.sleep(2)
-
-        # ═══ METHOD 2: Fallback actor (instagram-scraper) ═══
+        # ── Method 2: Fallback actor (instagram-scraper) ──
         fallback_actor = "apify~instagram-scraper"
         if fallback_actor != self.actor_id:
-            token2 = self.token_rotator.get_next_token_excluding(used_tokens) or token
-            used_tokens.append(token2)
+            print(f"[REEL] Primary actor returned no views. Trying fallback: {fallback_actor}")
 
-            print(f"[SCRAPER] 🔄 Method 2: Fallback actor ({fallback_actor})")
+            fallback_token = self.token_rotator.get_next_token() or token
             fallback_result = await self._call_apify_actor(
                 actor_id=fallback_actor,
                 payload={
@@ -416,109 +409,26 @@ class ApifyInstagramService:
                     "resultsLimit": 1,
                     "resultsType": "posts",
                 },
-                token=token2,
+                token=fallback_token,
                 shortcode=shortcode,
             )
 
             if fallback_result is not None:
                 fb_classification = classify_apify_response(fallback_result, video_url)
-                self.token_rotator.report_result(token2, fb_classification)
+                self.token_rotator.report_result(fallback_token, fb_classification)
 
-                if fb_classification["type"] == "SUCCESS":
-                    print(f"[SCRAPER] ✅ Method 2 success: views={fb_classification['views']}")
-                    return self._build_result(fb_classification, method="live")
+                if fb_classification["type"] in ("SUCCESS", "PARTIAL"):
+                    method = "live" if fb_classification["type"] == "SUCCESS" else "apify_restricted_parsed"
+                    return self._build_result(fb_classification, method=method)
 
-                if fb_classification["type"] == "PARTIAL" and not best_partial_classification:
-                    best_partial_classification = fb_classification
-                    print(f"[SCRAPER] ⚠️ Method 2 partial: likes={fb_classification.get('likes')}")
-
-        await asyncio.sleep(2)
-
-        # ═══ METHOD 3: Primary actor WITH RESIDENTIAL PROXY ═══
-        token3 = self.token_rotator.get_next_token_excluding(used_tokens) or token
-        used_tokens.append(token3)
-
-        print(f"[SCRAPER] 🔄 Method 3: Primary actor + RESIDENTIAL proxy")
-        residential_result = await self._call_apify_actor(
-            actor_id=self.actor_id,
-            payload={
-                "username": [clean_url],
-                "resultsLimit": 1,
-                "proxy": {
-                    "useApifyProxy": True,
-                    "apifyProxyGroups": ["RESIDENTIAL"],
-                },
-            },
-            token=token3,
-            shortcode=shortcode,
-            timeout_seconds=120,
-        )
-
-        if residential_result is not None:
-            res_classification = classify_apify_response(residential_result, video_url)
-            self.token_rotator.report_result(token3, res_classification)
-
-            if res_classification["type"] == "SUCCESS":
-                print(f"[SCRAPER] ✅ Method 3 success: views={res_classification['views']}")
-                return self._build_result(res_classification, method="live_residential")
-
-            if res_classification["type"] == "PARTIAL" and not best_partial_classification:
-                best_partial_classification = res_classification
-
-        await asyncio.sleep(2)
-
-        # ═══ METHOD 4: RapidAPI Instagram Scraper ═══
-        print(f"[SCRAPER] 🔄 Method 4: RapidAPI")
-        rapidapi_result = await self._method_rapidapi(clean_url, shortcode)
-        if rapidapi_result is not None:
-            print(f"[SCRAPER] ✅ Method 4 success: views={rapidapi_result.get('views')}")
-            return rapidapi_result
-
-        await asyncio.sleep(2)
-
-        # ═══ METHOD 5: Community Apify actor ═══
-        community_actor = "reGrowth~instagram-scraper"
-        token5 = self.token_rotator.get_next_token_excluding(used_tokens) or token
-        used_tokens.append(token5)
-
-        print(f"[SCRAPER] 🔄 Method 5: Community actor ({community_actor})")
-        try:
-            community_result = await self._call_apify_actor(
-                actor_id=community_actor,
-                payload={"urls": [clean_url], "resultsLimit": 1},
-                token=token5,
-                shortcode=shortcode,
-            )
-
-            if community_result is not None:
-                comm_classification = classify_apify_response(community_result, video_url)
-                self.token_rotator.report_result(token5, comm_classification)
-
-                if comm_classification["type"] == "SUCCESS":
-                    print(f"[SCRAPER] ✅ Method 5 success: views={comm_classification['views']}")
-                    return self._build_result(comm_classification, method="live_community")
-
-                if comm_classification["type"] == "PARTIAL" and not best_partial_classification:
-                    best_partial_classification = comm_classification
-        except Exception as e:
-            print(f"[SCRAPER] Method 5 failed: {e}")
-
-        # ═══ ALL METHODS FAILED ═══
-        # Return best partial data if we have any
-        if best_partial_classification:
-            print(f"[SCRAPER] 📊 All 5 methods failed for full data. "
-                  f"Best partial: likes={best_partial_classification.get('likes')}")
-            return self._build_result(best_partial_classification, method="apify_restricted_parsed")
-
-        print(f"[SCRAPER] ❌ All 5 methods failed for {clean_url}")
+        # Both actors failed — return error
         return {"error": "restricted_page", "restricted": True,
                 "views": 0, "likes": 0, "comments": 0,
                 "author_username": "", "method": "apify_failed",
                 "estimated": False, "cached": False}
 
     async def _call_apify_actor(self, actor_id: str, payload: dict,
-                                 token: str, shortcode: str,
-                                 timeout_seconds: int = 120) -> Optional[dict]:
+                                 token: str, shortcode: str) -> Optional[dict]:
         """Call a specific Apify actor and return the first result item, or None."""
         url = (
             f"{self.BASE_URL}/acts/{actor_id}"
@@ -529,7 +439,7 @@ class ApifyInstagramService:
         headers = {"Content-Type": "application/json"}
 
         try:
-            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+            timeout = aiohttp.ClientTimeout(total=120)
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 print(f"[REEL] Calling: {self.BASE_URL}/acts/{actor_id}/run-sync-get-dataset-items")
@@ -577,7 +487,7 @@ class ApifyInstagramService:
                     return item
 
         except asyncio.TimeoutError:
-            print(f"[Apify] Request timed out ({timeout_seconds}s) for actor {actor_id}")
+            print(f"[Apify] Request timed out (120 seconds) for actor {actor_id}")
             self.token_rotator.report_error(token)
             return None
         except aiohttp.ClientError as e:
@@ -599,12 +509,13 @@ class ApifyInstagramService:
 
         # Views can be None (PARTIAL) or int (SUCCESS)
         has_real_views = views is not None
-        # Store None (not -1) when views are unknown — cleaner for DB and display
+        if views is None:
+            views = -1
 
         caption = classification.get("caption", "")
 
         return {
-            "views": int(views) if views is not None else None,
+            "views": int(views),
             "likes": int(likes),
             "comments": int(comments),
             "shares": int(shares),
@@ -620,62 +531,6 @@ class ApifyInstagramService:
             "cached": False,
             "views_unknown": not has_real_views,
         }
-
-    async def _method_rapidapi(self, url: str, shortcode: str) -> Optional[dict]:
-        """Method 4: RapidAPI Instagram scraper — completely different service."""
-        api_key = os.getenv("RAPIDAPI_KEY")
-        if not api_key:
-            print("[SCRAPER] Method 4 skipped: no RAPIDAPI_KEY")
-            return None
-
-        api_url = "https://instagram-scraper-api2.p.rapidapi.com/v1/post_info"
-        headers = {
-            "X-RapidAPI-Key": api_key,
-            "X-RapidAPI-Host": "instagram-scraper-api2.p.rapidapi.com",
-        }
-        query_params = {"code_or_id_or_url": shortcode}
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    api_url, headers=headers, params=query_params,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status != 200:
-                        print(f"[SCRAPER] RapidAPI HTTP {resp.status}")
-                        return None
-
-                    data = await resp.json()
-                    if not data or not data.get("data"):
-                        return None
-
-                    post = data["data"]
-                    views = (
-                        post.get("play_count")
-                        or post.get("video_play_count")
-                        or post.get("view_count")
-                        or post.get("video_view_count")
-                        or post.get("videoPlayCount")
-                        or post.get("videoViewCount")
-                    )
-
-                    if views is not None:
-                        return {
-                            "views": int(views),
-                            "likes": int(post.get("like_count", post.get("likesCount", 0)) or 0),
-                            "comments": int(post.get("comment_count", post.get("commentsCount", 0)) or 0),
-                            "shares": 0,
-                            "author_username": post.get("user", {}).get("username", ""),
-                            "method": "rapidapi",
-                            "estimated": False,
-                            "cached": False,
-                            "views_unknown": False,
-                        }
-
-                    return None
-        except Exception as e:
-            print(f"[SCRAPER] RapidAPI error: {e}")
-            return None
 
     async def _get_from_cache(self, shortcode: str) -> Optional[dict]:
         """Get cached metrics if not expired."""

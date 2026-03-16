@@ -217,7 +217,7 @@ class SubmissionCommands(commands.Cog):
                     views_unknown = result.get("views_unknown", False)
                     
                     # Determine indicators
-                    if views_unknown or views is None or views < 0:
+                    if views_unknown or views < 0:
                         v_text = "⏳ Pending..."
                     elif result.get("estimated"):
                         v_text = f"⚠️ ~{views:,}"
@@ -356,7 +356,7 @@ class SubmissionCommands(commands.Cog):
                 1 for _, r in results if r.get("_skip_reason") or r.get("error")
             )
             total_views = sum(
-                max(0, r.get("views", 0) or 0) for _, r in results if not r.get("_skip_reason")
+                max(0, r.get("views", 0)) for _, r in results if not r.get("_skip_reason")
             )
             total_likes = sum(
                 r.get("likes", 0) for _, r in results if not r.get("_skip_reason")
@@ -379,7 +379,7 @@ class SubmissionCommands(commands.Cog):
                     likes = result.get("likes", 0)
                     comments = result.get("comments", 0)
                     
-                    if views is None or views < 0 or result.get("views_unknown"):
+                    if views < 0 or result.get("views_unknown"):
                         v_icon = "⏳ "
                         v_display = "Pending..."
                     elif result.get("estimated"):
